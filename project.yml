@@ -1,0 +1,42 @@
+name: NodetermMobile
+
+options:
+  bundleIdPrefix: dev.nodeterm
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  NodetermKit:
+    path: .
+  SwiftTerm:
+    # Supply-chain decision: pinned to an EXACT version (SPEC / house rules). Do not widen.
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: 1.15.0
+
+targets:
+  NodetermMobile:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: App/Sources
+    dependencies:
+      - package: NodetermKit
+        product: NodetermKit
+      - package: SwiftTerm
+        product: SwiftTerm
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.nodeterm.mobile
+        MARKETING_VERSION: "0.0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # SPEC §9.5 / §10: dictation needs mic + speech permission usage strings.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "nodeterm uses the microphone for voice-to-text dictation into your terminal sessions."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "nodeterm uses on-device speech recognition to turn your voice into terminal input."
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
