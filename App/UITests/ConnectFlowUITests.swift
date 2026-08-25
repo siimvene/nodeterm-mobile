@@ -10,6 +10,13 @@ final class ConnectFlowUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
+        // Idempotency: a previous run may have saved the profile already — the app auto-connects
+        // and the row appears without the add-server flow.
+        if app.staticTexts["Sim Shell"].waitForExistence(timeout: 6) {
+            openTerminalAndProve(app)
+            return
+        }
+
         app.buttons["Add Server"].firstMatch.tap()
 
         let name = app.textFields["Name"]
@@ -44,14 +51,18 @@ final class ConnectFlowUITests: XCTestCase {
         let row = app.staticTexts["Sim Shell"]
         XCTAssertTrue(row.waitForExistence(timeout: 20),
                       "session row should appear after login + workspace:load")
+        openTerminalAndProve(app)
+    }
 
-        // Server list should show the profile as online (not the offline/sign-in state).
+    @MainActor
+    private func openTerminalAndProve(_ app: XCUIApplication) {
         XCTAssertFalse(app.staticTexts["Sign in"].firstMatch.exists,
                        "server must not be in auth-required state")
 
         // Open the terminal: this fires pty:create (co-attach/spawn) on the server.
         // SwiftUI list rows can report non-hittable while visible — tap by coordinate instead.
-        row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        app.staticTexts["Sim Shell"]
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         // Terminal screen: wait for the attach, then assert it did not land in an error phase.
         sleep(6)
         XCTAssertFalse(app.staticTexts["Welcome back"].isHittable,
