@@ -8,7 +8,9 @@ import NodetermKit
 @MainActor
 public final class ServerRuntime: ObservableObject, Identifiable {
     public let profile: ServerProfile
-    public var id: String { profile.id }
+    // nonisolated: Identifiable's `id` is read from nonisolated generic code (ForEach); `profile`
+    // is a let of a Sendable value type, so the read crosses no isolation boundary in practice.
+    public nonisolated var id: String { profile.id }
 
     private let rpc: RpcClienting
     private let workspaceStore: WorkspaceStoring

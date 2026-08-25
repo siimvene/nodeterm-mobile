@@ -65,7 +65,7 @@ public final class AppEnvironment: ObservableObject {
             existing.start()
             return
         }
-        guard let cookie = try? keychain.cookie(forServer: profile.id), let cookie else {
+        guard let cookie = try? keychain.cookie(forServer: profile.id) else {
             // No stored cookie ⇒ server needs a login before it can connect (SPEC §3.5/§3.6).
             return
         }
@@ -143,7 +143,7 @@ public final class AppEnvironment: ObservableObject {
     /// server-side) drop the stored password and surface the login sheet (SPEC §3.5 step 1).
     public func reauth(_ profile: ServerProfile) async {
         guard profile.rememberPassword,
-              let password = try? keychain.password(forServer: profile.id), let password else {
+              let password = try? keychain.password(forServer: profile.id) else {
             reauthNeeded = profile
             return
         }
@@ -178,7 +178,7 @@ public final class AppEnvironment: ObservableObject {
     /// (SPEC §3.4 / §9 rule 9 — the UI copy says the server session lives on).
     public func removeServer(_ profile: ServerProfile) async {
         dropRuntime(id: profile.id)
-        if let cookie = try? keychain.cookie(forServer: profile.id), let cookie {
+        if let cookie = try? keychain.cookie(forServer: profile.id) {
             await auth.logout(baseURL: profile.baseURL, cookie: cookie)
         }
         try? keychain.deleteAll(forServer: profile.id)
