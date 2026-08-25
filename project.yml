@@ -21,6 +21,7 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: App/Sources
+      - path: App/Assets.xcassets
     dependencies:
       - package: NodetermKit
         product: NodetermKit
@@ -29,6 +30,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.nodeterm.mobile
+        INFOPLIST_KEY_CFBundleDisplayName: "Remote Claude"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Device signing: automatic, Siim's team (Apple Development cert in login keychain).
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: D7HDY2ST3C
         # Compile the REAL NodetermKit wiring in Factory.swift (stubs without it).
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) NODETERM_KIT_IMPL_READY"
         MARKETING_VERSION: "0.0.1"
