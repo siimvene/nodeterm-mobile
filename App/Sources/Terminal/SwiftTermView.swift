@@ -80,7 +80,7 @@ public struct SwiftTermView: UIViewRepresentable {
     public func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     public func makeUIView(context: Context) -> TerminalView {
-        let view = TerminalView(frame: .zero)
+        let view = ScrollableTerminalView(frame: .zero)   // adds the missing swipe→wheel scroll path
         view.terminalDelegate = context.coordinator
         view.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         applyTheme(to: view)
