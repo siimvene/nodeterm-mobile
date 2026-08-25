@@ -27,6 +27,20 @@ let package = Package(
             dependencies: ["NodetermKit"],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
+            ],
+            // Toolchain-environment workaround (NOT a third-party dependency): this machine has
+            // only Apple CommandLineTools. swift-testing's runtime ships there but is not on any
+            // default @rpath, so the .xctest bundle fails to dlopen Testing.framework /
+            // lib_TestingInterop.dylib. Embedding the two absolute CLT paths as rpaths lets
+            // `swift test` load the swift-testing runtime and actually execute the suite. On a
+            // full Xcode toolchain these paths are simply unused.
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-rpath",
+                    "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+                    "-Xlinker", "-rpath",
+                    "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/usr/lib"
+                ])
             ]
         )
     ]

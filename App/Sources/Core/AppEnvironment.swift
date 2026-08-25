@@ -1,0 +1,172 @@
+import SwiftUI
+import NodetermKit
+
+/// The composition root the whole UI observes (SPEC §8). It holds ONLY Kit protocol types; every
+/// concrete implementation is constructed in `Factory` (the single place an integrator fixes
+/// concrete names). No entitlement/subscription state exists here (SPEC §1 hard requirement).
+@MainActor
+public final class AppEnvironment: ObservableObject {
+
+    public let settings: AppSettings
+    private let profileStore: ServerProfileStoring
+    private let keychain: KeychainStoring
+    private let auth: AuthClienting
+    private let deviceName: String
+
+    @Published public private(set) var runtimes: [ServerRuntime] = []
+    /// Servers with no live runtime (never connected / logged out) still need a row on HOME.
+    @Published public private(set) var profiles: [ServerProfile] = []
+    /// A server whose session expired and needs a login sheet (SPEC §3.5).
+    @Published public var reauthNeeded: ServerProfile?
+
+    public init(settings: AppSettings,
+                profileStore: ServerProfileStoring,
+                keychain: KeychainStoring,
+                auth: AuthClienting,
+                deviceName: String) {
+        self.settings = settings
+        self.profileStore = profileStore
+        self.keychain = keychain
+        self.auth = auth
+        self.deviceName = deviceName
+        self.profiles = (try? profileStore.all()) ?? []
+    }
+
+    public func runtime(for profileId: String) -> ServerRuntime? {
+        runtimes.first { $0.id == profileId }
+    }
+
+    // MARK: Foreground / background (SPEC §8.4)
+
+    /// Connect every auto-connect server that has a stored cookie (SPEC §8.4). Called on foreground.
+    public func connectAll() {
+        for profile in profiles where profile.autoConnect {
+            connect(profile)
+        }
+    }
+
+    public func disconnectAll() {
+        runtimes.forEach { $0.stop() }
+    }
+
+    private func connect(_ profile: ServerProfile) {
+        guard runtime(for: profile.id) == nil else { return }
+        guard let cookie = try? keychain.cookie(forServer: profile.id), let cookie else {
+            // No stored cookie ⇒ server needs a login before it can connect (SPEC §3.5/§3.6).
+            return
+        }
+        let runtime = Factory.makeRuntime(profile: profile, cookie: cookie,
+                                          settings: settings, deviceName: deviceName)
+        runtimes.append(runtime)
+        runtime.start()
+    }
+
+    // MARK: Add server (SPEC §3.6)
+
+    /// Perform the §3.2 login, persist `{name, baseURL}` + `{cookie[, password]}`, connect the WS.
+    /// Throws `AuthError` so the form can surface a plain message (SPEC §3.6 / §9.1).
+    public func addServer(name: String, baseURL: URL, password: String,
+                          rememberPassword: Bool, insecureHTTP: Bool) async throws {
+        let cookie = try await auth.login(baseURL: baseURL, password: password)
+        let profile = ServerProfile(name: name, baseURL: baseURL,
+                                    rememberPassword: rememberPassword, insecureHTTP: insecureHTTP)
+        try keychain.saveCookie(cookie, forServer: profile.id)
+        if rememberPassword { try keychain.savePassword(password, forServer: profile.id) }
+        try profileStore.add(profile)
+        profiles = (try? profileStore.all()) ?? profiles
+        connect(profile)
+    }
+
+    /// First-run `/setup` from the add-server flow when the server is unconfigured (SPEC §3.1).
+    /// Returns `true` if the server needed setup (the caller then prompts for the console token).
+    public func isUnconfigured(baseURL: URL) async -> Bool {
+        (try? await auth.detectUnconfigured(baseURL: baseURL)) ?? false
+    }
+
+    public func setupServer(name: String, baseURL: URL, token: String, password: String,
+                            insecureHTTP: Bool) async throws {
+        let cookie = try await auth.setup(baseURL: baseURL, token: token, password: password)
+        let profile = ServerProfile(name: name, baseURL: baseURL, insecureHTTP: insecureHTTP)
+        try keychain.saveCookie(cookie, forServer: profile.id)
+        try profileStore.add(profile)
+        profiles = (try? profileStore.all()) ?? profiles
+        connect(profile)
+    }
+
+    // MARK: Re-auth (SPEC §3.5)
+
+    /// Silent re-login when the user opted into auto-relogin; on wrong-password (password changed
+    /// server-side) drop the stored password and surface the login sheet (SPEC §3.5 step 1).
+    public func reauth(_ profile: ServerProfile) async {
+        guard profile.rememberPassword,
+              let password = try? keychain.password(forServer: profile.id), let password else {
+            reauthNeeded = profile
+            return
+        }
+        do {
+            let cookie = try await auth.login(baseURL: profile.baseURL, password: password)
+            try keychain.saveCookie(cookie, forServer: profile.id)
+            runtime(for: profile.id)?.stop()
+            runtimes.removeAll { $0.id == profile.id }
+            connect(profile)
+        } catch AuthError.wrongPassword {
+            try? keychain.deletePassword(forServer: profile.id)
+            reauthNeeded = profile
+        } catch {
+            reauthNeeded = profile
+        }
+    }
+
+    /// Manual login from the re-auth sheet (SPEC §3.5 step 2).
+    public func login(_ profile: ServerProfile, password: String, rememberPassword: Bool) async throws {
+        let cookie = try await auth.login(baseURL: profile.baseURL, password: password)
+        try keychain.saveCookie(cookie, forServer: profile.id)
+        if rememberPassword { try keychain.savePassword(password, forServer: profile.id) }
+        reauthNeeded = nil
+        runtime(for: profile.id)?.stop()
+        runtimes.removeAll { $0.id == profile.id }
+        connect(profile)
+    }
+
+    // MARK: Remove / logout (SPEC §3.4)
+
+    /// Logout is best-effort server-side (token survives to TTL) but MUST delete local secrets
+    /// (SPEC §3.4 / §9 rule 9 — the UI copy says the server session lives on).
+    public func removeServer(_ profile: ServerProfile) async {
+        runtime(for: profile.id)?.stop()
+        runtimes.removeAll { $0.id == profile.id }
+        if let cookie = try? keychain.cookie(forServer: profile.id), let cookie {
+            await auth.logout(baseURL: profile.baseURL, cookie: cookie)
+        }
+        try? keychain.deleteAll(forServer: profile.id)
+        try? profileStore.remove(id: profile.id)
+        profiles = (try? profileStore.all()) ?? profiles
+    }
+
+    // MARK: HOME stat tiles (SPEC §9.1)
+
+    /// Terminal-kind nodes in non-`closed` projects across CONNECTED servers.
+    public var activeSessionCount: Int {
+        connectedRuntimes.reduce(0) { $0 + $1.sessionRows.count }
+    }
+
+    public var onlineServerCount: Int {
+        runtimes.filter { $0.connectionState == .connected }.count
+    }
+
+    /// Non-`closed` projects across connected servers.
+    public var projectCount: Int {
+        connectedRuntimes.reduce(0) {
+            $0 + ($1.workspace?.projects.filter { $0.closed != true }.count ?? 0)
+        }
+    }
+
+    private var connectedRuntimes: [ServerRuntime] {
+        runtimes.filter { $0.connectionState == .connected }
+    }
+
+    /// All HOME session rows across every connected server, grouped per SPEC §6.3.
+    public var groupedSessions: [(section: SessionSection, rows: [SessionRow])] {
+        SessionListModel.grouped(connectedRuntimes.flatMap { $0.sessionRows })
+    }
+}
