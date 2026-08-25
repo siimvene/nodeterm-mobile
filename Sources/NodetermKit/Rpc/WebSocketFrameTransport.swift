@@ -72,6 +72,11 @@ public final class WebSocketFrameTransport: NSObject, FrameTransporting, @unchec
 
         let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
         let task = session.webSocketTask(with: request)
+        // SPEC §4.10: the wire is an 8 MiB-frame world (workspace:load, transcript reads, a
+        // pty:resync of a deep scrollback). URLSessionWebSocketTask defaults to 1 MiB, and an
+        // oversized inbound frame makes receive() throw → reconnect → same request → same frame:
+        // a permanent livelock on honest data. Raise the bound to the wire cap — keep A bound.
+        task.maximumMessageSize = NodetermWire.maxPayloadBytes
 
         lock.withLock {
             self.session = session
@@ -131,9 +136,12 @@ public final class WebSocketFrameTransport: NSObject, FrameTransporting, @unchec
                 try? await Task.sleep(nanoseconds: self.pingIntervalNs)
                 if Task.isCancelled { return }
                 guard let task = self.lock.withLock({ self.task }) else { return }
-                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                    task.sendPing { _ in cont.resume() }   // a failure surfaces via receive()
+                let ok = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                    task.sendPing { err in cont.resume(returning: err == nil) }
                 }
+                // A ping failure means the socket is dead; the disconnect itself surfaces via
+                // receive(). Exit rather than pinging a corpse every 20 s until close() is called.
+                if !ok { return }
             }
         }
         lock.withLock { self.pingTask = t }

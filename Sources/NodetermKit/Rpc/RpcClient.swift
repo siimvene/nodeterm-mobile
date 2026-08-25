@@ -73,7 +73,12 @@ public actor RpcClient: RpcClienting {
     // MARK: RpcClienting — lifecycle
 
     public func start() async {
-        guard loopTask == nil, !stopped else { return }
+        guard loopTask == nil else { return }
+        // Restartable on purpose (SPEC §8.4: reconnect on app foreground after a background stop).
+        // `stopped` is a per-run flag, not a tombstone — a fresh start() clears it so the same
+        // client can run again after stop(). The old (cancelled) loop can never resurrect: both
+        // loops also check `Task.isCancelled`, which stays true for the cancelled task.
+        stopped = false
         loopTask = Task { [weak self] in await self?.runLoop() }
     }
 
@@ -212,25 +217,37 @@ public actor RpcClient: RpcClienting {
 
     private func runLoop() async {
         var attempt = 0
-        while !stopped {
+        while !stopped && !Task.isCancelled {
             let t = makeTransport()
             setState(.reconnecting)
             do {
                 try await t.connect()
             } catch {
-                // Connect failure is treated identically to a mid-life drop (§4.8.5).
+                // Connect failure is treated identically to a mid-life drop (§4.8.5). The abandoned
+                // transport MUST be closed: `WebSocketFrameTransport.connect()` builds a URLSession
+                // that retains its delegate (and a ping task) until close() invalidates it — one
+                // leak per backoff tick is unbounded with the server down overnight.
+                await t.close()
                 setState(authState(for: error))
                 if stopped { break }
                 await sleeper(NodetermWire.reconnectDelayMs(attempt: attempt))  // §4.8.2
                 attempt += 1
                 continue
             }
-            if stopped { await t.close(); break }
+            if stopped || Task.isCancelled { await t.close(); break }
             transport = t
             attempt = 0                          // reset backoff on a successful open (§4.8.2)
             setState(.connected)                 // higher layers re-subscribe / re-issue pty:create (§4.8.3)
             await receiveUntilClose(t)
+            // A CANCELLED loop (stop() raced a restart) must not touch shared state on the way
+            // out — a new loop may already own `transport`/`pending`, and stop() (the only
+            // canceller) already closed and rejected everything for THIS run. Just leave.
+            if Task.isCancelled { return }
             transport = nil
+            // Same leak rule after a mid-life drop: the dead socket's URLSession/ping task are
+            // only released by close(). stop() already closed the CURRENT transport, but by then
+            // this local `t` has been detached from `transport` — close it here, idempotently.
+            await t.close()
             // Clear the pending map BEFORE rejecting so a re-request cannot collide with a stale id
             // (SPEC §4.8.1).
             failAllPending()
@@ -242,7 +259,7 @@ public actor RpcClient: RpcClienting {
     }
 
     private func receiveUntilClose(_ t: FrameTransporting) async {
-        while !stopped {
+        while !stopped && !Task.isCancelled {
             let msg: WSMessage
             do {
                 msg = try await t.receive()

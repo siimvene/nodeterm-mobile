@@ -23,6 +23,7 @@ actor FakeTransport: FrameTransporting {
     private var buffer: [WSMessage] = []
     private var waiter: CheckedContinuation<WSMessage, Error>?
     private var closed = false
+    private var closeCount = 0
 
     func setConnectError(_ e: Error?) { connectError = e; if e == nil { closed = false } }
 
@@ -42,6 +43,7 @@ actor FakeTransport: FrameTransporting {
     }
     func close() async {
         closed = true
+        closeCount += 1
         if let w = waiter { waiter = nil; w.resume(throwing: RpcTransportError.closed) }
     }
 
@@ -55,6 +57,8 @@ actor FakeTransport: FrameTransporting {
         if let w = waiter { waiter = nil; w.resume(throwing: RpcTransportError.closed) }
     }
     func sentFrames() -> [String] { sent }
+    func closes() -> Int { closeCount }
+    func reopen() { closed = false; connectError = nil }
     func firstSentId() -> Int? {
         guard let f = sent.first, case .req(let id, _, _, _)? = RpcFrame.parse(text: f) else { return nil }
         return id
@@ -126,6 +130,8 @@ public func runRpcClientTests() async {
     await testInboundUndefTrimsTrailingOmittedArg()
     await testInboundMeaningfulNullPreserved()
     await testConnectionStateReachesConnectedThenOffline()
+    await testClientRestartsAfterStop()
+    await testAbandonedTransportsAreClosed()
 }
 
 // §4.8.1 — every in-flight request fails with .disconnected on close
@@ -351,6 +357,51 @@ private func testInboundMeaningfulNullPreserved() async {
     let got = await collect(sub, count: 1)
     expect(got.first == [.string("x"), .null], "meaningful null preserved")
     await client.stop()
+}
+
+// SPEC §8.4 — the app foreground/background lifecycle: stop() then start() on the SAME client
+// must reconnect (the background→foreground round-trip; `stopped` is per-run, not a tombstone).
+private func testClientRestartsAfterStop() async {
+    let fake = FakeTransport()
+    let client = RpcClient(makeTransport: { fake })
+    await client.start()
+    expect(await waitUntilConnected(client), "first run connects")
+
+    await client.stop()
+    expect(await client.connectionState() == .offline, "offline after stop")
+
+    await fake.reopen()   // background killed the socket; foreground gets a fresh one
+    await client.start()
+    expect(await waitUntilConnected(client), "restart after stop reconnects")
+
+    // The restarted run serves requests end-to-end.
+    let reqTask = Task { try await client.request("workspace:load", []) }
+    expect(await waitUntil { await fake.firstSentId() != nil }, "restarted run sends")
+    let id = await fake.firstSentId()!
+    await fake.push(.text(try! RpcFrame.resOk(id: id, result: .bool(true)).encodedText()))
+    expect((try! await reqTask.value).boolValue == true, "restarted run resolves requests")
+    await client.stop()
+}
+
+// Leak guard — every transport the reconnect loop abandons is close()d: N failed connect
+// attempts must produce N closes (the URLSession/ping-task leak fix).
+private func testAbandonedTransportsAreClosed() async {
+    let fake = FakeTransport()
+    await fake.setConnectError(RpcTransportError.connectFailure)
+
+    let recorder = Collector<Int>()
+    let box = BackoffBox()
+    let sleeper: @Sendable (Int) async -> Void = { ms in
+        let n = await recorder.append(ms)
+        if n >= 3 { await box.client?.stop() }
+    }
+    let client = RpcClient(makeTransport: { fake }, sleeper: sleeper)
+    box.client = client
+    await client.start()
+    expect(await waitUntil(timeoutMs: 5000) { await recorder.all().count >= 3 }, "3 attempts ran")
+    await client.stop()
+    expect(await waitUntil { await fake.closes() >= 3 },
+           "every failed connect attempt closed its transport (got \(await fake.closes()))")
 }
 
 private func testConnectionStateReachesConnectedThenOffline() async {

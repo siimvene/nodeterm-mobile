@@ -19,6 +19,7 @@ public struct TerminalScreen: View {
     @ObservedObject private var runtime: ServerRuntime
 
     @State private var showDictation = false
+    @State private var showTranscript = false
     @State private var copiedPill = false
 
     private let row: SessionRow
@@ -47,6 +48,11 @@ public struct TerminalScreen: View {
             DictationSheet(runtime: runtime, settings: settings) { text, submit in
                 Task { await vm.sendText(text, submit: submit) }
             }
+        }
+        .sheet(isPresented: $showTranscript) {
+            // Transcript read — chat view of a Claude session (SPEC §1.1 v0 / §5.4).
+            NavigationStack { TranscriptView(runtime: runtime, row: row) }
+                .preferredColorScheme(.dark)
         }
     }
 
@@ -118,6 +124,14 @@ public struct TerminalScreen: View {
         ToolbarItem(placement: .topBarTrailing) {
             if let ctx = runtime.status(for: row.nodeId)?.context {
                 ContextPill(model: ctx.model, percent: ctx.usedPercent)
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            // Transcript is a Claude-session feature (SPEC §5.4: the server resolves Claude
+            // transcripts); other agents get no dead button.
+            if row.agentId == "claude" {
+                Button { showTranscript = true } label: { Image(systemName: "text.bubble") }
+                    .tint(Theme.textSecondary)
             }
         }
     }

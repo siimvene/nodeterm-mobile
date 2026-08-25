@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import NodetermKit
 
 /// The composition root the whole UI observes (SPEC §8). It holds ONLY Kit protocol types; every
@@ -18,6 +19,13 @@ public final class AppEnvironment: ObservableObject {
     @Published public private(set) var profiles: [ServerProfile] = []
     /// A server whose session expired and needs a login sheet (SPEC §3.5).
     @Published public var reauthNeeded: ServerProfile?
+
+    /// Per-runtime `objectWillChange` relays (SPEC §9.1: HOME's tiles/rows/server states read the
+    /// runtimes' @Published state through computed properties here — without the relay a nested
+    /// ObservableObject's changes never invalidate views that observe only AppEnvironment).
+    private var runtimeObservers: [String: AnyCancellable] = [:]
+    /// Servers with an auto-relogin currently in flight (dedupe the §3.5 edge).
+    private var reauthInFlight: Set<String> = []
 
     public init(settings: AppSettings,
                 profileStore: ServerProfileStoring,
@@ -50,15 +58,51 @@ public final class AppEnvironment: ObservableObject {
     }
 
     private func connect(_ profile: ServerProfile) {
-        guard runtime(for: profile.id) == nil else { return }
+        // A runtime that already exists is RESTARTED, not skipped (SPEC §8.4): backgrounding
+        // stops every runtime in place, so on foreground the same object must reconnect.
+        // start() is a no-op while it is already running.
+        if let existing = runtime(for: profile.id) {
+            existing.start()
+            return
+        }
         guard let cookie = try? keychain.cookie(forServer: profile.id), let cookie else {
             // No stored cookie ⇒ server needs a login before it can connect (SPEC §3.5/§3.6).
             return
         }
         let runtime = Factory.makeRuntime(profile: profile, cookie: cookie,
                                           settings: settings, deviceName: deviceName)
+        runtime.onAuthRequired = { [weak self, weak runtime] in
+            // Dead cookie (SPEC §3.5): pause the reconnect loop FIRST (stop hammering the dead
+            // cookie at the backoff cap), then silently re-login when the user opted in.
+            guard let self, let runtime else { return }
+            runtime.pauseForAuth()
+            self.autoReauth(profile)
+        }
+        // Relay the runtime's change notifications so HOME/server-detail (which observe only
+        // AppEnvironment) re-render on live workspace/status/connection updates (SPEC §9.1/§6.3).
+        runtimeObservers[profile.id] = runtime.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         runtimes.append(runtime)
         runtime.start()
+    }
+
+    /// Drop a runtime AND its change relay (the two must live and die together).
+    private func dropRuntime(id: String) {
+        runtime(for: id)?.stop()
+        runtimes.removeAll { $0.id == id }
+        runtimeObservers[id] = nil
+    }
+
+    /// SPEC §3.5 step 1: on auth-expiry, silently re-run the login once when the user opted into
+    /// auto-relogin; otherwise (or on failure) surface the login sheet.
+    private func autoReauth(_ profile: ServerProfile) {
+        guard !reauthInFlight.contains(profile.id) else { return }
+        reauthInFlight.insert(profile.id)
+        Task { [weak self] in
+            await self?.reauth(profile)
+            self?.reauthInFlight.remove(profile.id)
+        }
     }
 
     // MARK: Add server (SPEC §3.6)
@@ -106,8 +150,8 @@ public final class AppEnvironment: ObservableObject {
         do {
             let cookie = try await auth.login(baseURL: profile.baseURL, password: password)
             try keychain.saveCookie(cookie, forServer: profile.id)
-            runtime(for: profile.id)?.stop()
-            runtimes.removeAll { $0.id == profile.id }
+            // The cookie is baked into the transport factory, so a re-login needs a FRESH runtime.
+            dropRuntime(id: profile.id)
             connect(profile)
         } catch AuthError.wrongPassword {
             try? keychain.deletePassword(forServer: profile.id)
@@ -123,8 +167,8 @@ public final class AppEnvironment: ObservableObject {
         try keychain.saveCookie(cookie, forServer: profile.id)
         if rememberPassword { try keychain.savePassword(password, forServer: profile.id) }
         reauthNeeded = nil
-        runtime(for: profile.id)?.stop()
-        runtimes.removeAll { $0.id == profile.id }
+        // Fresh runtime — the transport factory captured the OLD cookie (see reauth()).
+        dropRuntime(id: profile.id)
         connect(profile)
     }
 
@@ -133,8 +177,7 @@ public final class AppEnvironment: ObservableObject {
     /// Logout is best-effort server-side (token survives to TTL) but MUST delete local secrets
     /// (SPEC §3.4 / §9 rule 9 — the UI copy says the server session lives on).
     public func removeServer(_ profile: ServerProfile) async {
-        runtime(for: profile.id)?.stop()
-        runtimes.removeAll { $0.id == profile.id }
+        dropRuntime(id: profile.id)
         if let cookie = try? keychain.cookie(forServer: profile.id), let cookie {
             await auth.logout(baseURL: profile.baseURL, cookie: cookie)
         }

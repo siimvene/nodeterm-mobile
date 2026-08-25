@@ -33,6 +33,12 @@ public final class TerminalSessionVM: ObservableObject {
     @Published public private(set) var persistent: Bool? = nil
 
     private var tasks: [Task<Void, Never>] = []
+    /// The in-flight join (pty:create) — tracked so onDisappear can cancel it, and so a create
+    /// that resolves AFTER dismissal still kills its own viewer (SPEC §7.3/§7.4: an unkilled
+    /// phone viewer stays in the size ledger and clamps the desktop's grid).
+    private var joinTask: Task<Void, Never>?
+    /// Set by onDisappear; a join that resolves afterwards must register nothing (SPEC §7.4).
+    private var tornDown = false
     private var lastCols = 0
     private var lastRows = 0
     private var didCreate = false
@@ -60,19 +66,24 @@ public final class TerminalSessionVM: ObservableObject {
         runtime.onScreenNodeId = row.nodeId
         Task { await runtime.markViewed(nodeId: row.nodeId) }   // clears unread + acks done (§6.3 #8)
         lastCols = max(initialCols, 1); lastRows = max(initialRows, 1)
+        tornDown = false
         observeReconnect()
-        Task { await join(isReconnect: false) }
+        joinTask = Task { await join(isReconnect: false) }
     }
 
     /// Called on view disappear: kill ONLY this viewer (SPEC §7.4).
     public func onDisappear() {
         if runtime.onScreenNodeId == row.nodeId { runtime.onScreenNodeId = nil }
+        tornDown = true
         connectionObserver?.cancel(); connectionObserver = nil
+        joinTask?.cancel(); joinTask = nil
         tasks.forEach { $0.cancel() }; tasks.removeAll()
         let sid = sessionId, vid = viewerId
         if !sid.isEmpty {
             Task { [control] in await control.kill(sessionId: sid, viewerId: vid) }
         }
+        // A create still in flight is handled by join()'s post-create check: it sends the kill
+        // itself once the sessionId is known (SPEC §7.4).
     }
 
     /// App → background OR view off-screen kept warm (SPEC §7.3): PARK, do not kill.
@@ -105,6 +116,15 @@ public final class TerminalSessionVM: ObservableObject {
         // Refusals come back IN-BAND, not as errors (SPEC §5.1/§7.2 step 1).
         if let closed = result.closed { phase = .closed(by: closed.by); return }
         if let reason = result.unavailable { phase = .unavailable(reason); return }
+
+        // The view was dismissed while pty:create was in flight: the viewer WAS registered
+        // server-side, so kill it immediately instead of wiring streams for a dead VM (SPEC §7.4).
+        if tornDown {
+            let vid = viewerId
+            let sid = result.sessionId
+            if !sid.isEmpty { Task { [control] in await control.kill(sessionId: sid, viewerId: vid) } }
+            return
+        }
 
         sessionId = result.sessionId
         persistent = result.persistent
@@ -189,6 +209,7 @@ public final class TerminalSessionVM: ObservableObject {
     private var didCreateFlag: Bool { didCreate }
 
     private func rejoin() async {
+        guard !tornDown else { return }
         tasks.forEach { $0.cancel() }; tasks.removeAll()
         await join(isReconnect: true)
     }
@@ -196,10 +217,20 @@ public final class TerminalSessionVM: ObservableObject {
     // MARK: Input (SPEC §7.6)
 
     /// Raw keystrokes (already Ctrl-transformed by the emulator coordinator) → `pty:write` CAST.
+    /// SwiftTerm's system paste paths (long-press Paste, hardware ⌘V) ALSO deliver here, as the
+    /// whole blob — so anything carrying `\n` is routed through the framed `pty:send-text` path
+    /// via `TerminalInputRouting` (SPEC §7.6 MUST: multi-line paste never rides a raw pty:write,
+    /// which would submit once per line in agent CLIs). Never auto-submits (`enter:false`).
     public func write(_ data: Data) {
         guard !sessionId.isEmpty else { return }
-        let sid = sessionId, text = String(decoding: data, as: UTF8.self)
-        Task { [control] in await control.write(sessionId: sid, data: text) }
+        let sid = sessionId, pkey = persistKey
+        let text = String(decoding: data, as: UTF8.self)
+        switch TerminalInputRouting.delivery(for: .keystroke(text)) {
+        case .write(let raw):
+            Task { [control] in await control.write(sessionId: sid, data: raw) }
+        case .sendText(let framed, let enter):
+            Task { [control] in _ = try? await control.sendText(persistKey: pkey, text: framed, enter: enter) }
+        }
     }
 
     /// A literal control/escape string (toolbar keys) → `pty:write` CAST.

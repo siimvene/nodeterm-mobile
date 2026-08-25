@@ -27,7 +27,15 @@ public final class ServerRuntime: ObservableObject, Identifiable {
     /// The session currently shown full-screen — its `onScreen` flag governs unread-setting (§6.3 #8).
     public var onScreenNodeId: String?
 
+    /// Invoked (edge-triggered) when the connection reports `.authRequired` — the cookie is dead,
+    /// so the owner should pause the reconnect loop and re-auth (SPEC §3.5 step 1) instead of
+    /// letting the client hammer the dead cookie at the backoff cap forever.
+    public var onAuthRequired: (() -> Void)?
+
     private var tasks: [Task<Void, Never>] = []
+    /// Serializes the rpc.start()/rpc.stop() hops so a stop→start cycle (background→foreground,
+    /// SPEC §8.4) can never execute out of order on the client actor.
+    private var rpcLifecycle: Task<Void, Never>?
     private let deviceName: String
 
     public init(profile: ServerProfile,
@@ -58,34 +66,64 @@ public final class ServerRuntime: ObservableObject, Identifiable {
 
     // MARK: Lifecycle
 
+    /// Restartable (SPEC §8.4): backgrounding calls stop(), foregrounding calls start() again on
+    /// the SAME runtime. Event channels are wired ONCE per run here — subscriptions are client-
+    /// local fan-out that survives socket drops, so re-subscribing per `.connected` transition
+    /// (as an earlier revision did) stacked a new decoder set on every reconnect.
     public func start() {
         guard tasks.isEmpty else { return }
-        tasks.append(Task { await self.observeConnection() })
-        Task { [rpc] in await rpc.start() }
+        // The rpc hop is enqueued FIRST and every subscription awaits it: a still-queued stop()
+        // from a background cycle finishes all client streams, so subscribing before the queued
+        // stop→start pair has run would hand this run's subscriptions to the OLD run's teardown.
+        enqueueRpc { await $0.start() }
+        let ready = rpcLifecycle
+        tasks.append(Task { await ready?.value; await self.observeConnection() })
+        wireEvents(after: ready)
     }
 
     public func stop() {
         tasks.forEach { $0.cancel() }
         tasks.removeAll()
-        Task { [rpc] in await rpc.stop() }
+        enqueueRpc { await $0.stop() }
         connectionState = .offline
+    }
+
+    /// Pause for re-auth (SPEC §3.5): same teardown as stop(), but the visible state stays
+    /// `.authRequired` so the server row keeps showing "Sign in" instead of "Offline".
+    public func pauseForAuth() {
+        tasks.forEach { $0.cancel() }
+        tasks.removeAll()
+        enqueueRpc { await $0.stop() }
+        connectionState = .authRequired
+    }
+
+    /// FIFO-chain a lifecycle hop onto the rpc actor (start/stop stay ordered across turns).
+    private func enqueueRpc(_ op: @escaping @Sendable (RpcClienting) async -> Void) {
+        let previous = rpcLifecycle
+        rpcLifecycle = Task { [rpc] in
+            await previous?.value
+            await op(rpc)
+        }
     }
 
     private func observeConnection() async {
         let states = await rpc.connectionStates()
         for await state in states {
+            if Task.isCancelled { break }
             connectionState = state
             if state == .connected { await onConnected() }
+            // Dead cookie (SPEC §3.5/§4.8.4): hand off to the owner ONCE — the owner pauses this
+            // runtime (which ends this loop), so the edge cannot re-fire per backoff tick.
+            if state == .authRequired { onAuthRequired?() }
         }
     }
 
-    /// On (re)connect: load the workspace, wire the event channels, announce presence (SPEC §4.8
-    /// step 3 / §11.8). Idempotent-safe: subscriptions replay the early-event buffer to the first
-    /// subscriber (§4.9), and re-subscribing after a drop is expected.
+    /// On (re)connect: announce presence and reload the workspace (SPEC §4.8 step 3 / §11.8).
+    /// Event channels are NOT re-wired here — they are wired once per start() (subscriptions are
+    /// client-local and survive a socket drop; §4.8's "re-subscribe" is about the wire).
     private func onConnected() async {
         await rpc.cast("presence:hello", PresenceHello.args(deviceName: deviceName))
         await reloadWorkspace()
-        wireEvents()
     }
 
     public func reloadWorkspace() async {
@@ -99,26 +137,26 @@ public final class ServerRuntime: ObservableObject, Identifiable {
         }
     }
 
-    private func wireEvents() {
-        subscribe("agent:status") { [weak self] args in
+    private func wireEvents(after ready: Task<Void, Never>?) {
+        subscribe("agent:status", after: ready) { [weak self] args in
             guard let self, let first = args.first,
                   let event = try? first.decoded(as: AgentStatusEvent.self) else { return }
             let onScreen = (self.onScreenNodeId == event.nodeId)
             await self.reducer.ingest(event, onScreen: onScreen)
             await self.republishStatuses()
         }
-        subscribe("context:update") { [weak self] args in
+        subscribe("context:update", after: ready) { [weak self] args in
             guard let self, let first = args.first,
                   let usage = try? first.decoded(as: ContextWindowUsage.self) else { return }
             await self.reducer.ingestContext(usage)
             await self.republishStatuses()
         }
-        subscribe("agent:unread-clear") { [weak self] args in
+        subscribe("agent:unread-clear", after: ready) { [weak self] args in
             guard let self, let nodeId = args.first?.stringValue else { return }
             await self.reducer.clearUnread(nodeId: nodeId)   // clear WITHOUT re-acking (§6.3 #8)
             await self.republishStatuses()
         }
-        subscribe("canvas:mut") { [weak self] args in
+        subscribe("canvas:mut", after: ready) { [weak self] args in
             guard let self, args.count >= 2, let projectId = args[0].stringValue,
                   let mut = try? args[1].decoded(as: CanvasMutation.self) else { return }
             await self.workspaceStore.apply(mut, projectId: projectId)
@@ -126,9 +164,10 @@ public final class ServerRuntime: ObservableObject, Identifiable {
         }
     }
 
-    private func subscribe(_ channel: String,
+    private func subscribe(_ channel: String, after ready: Task<Void, Never>?,
                            _ handler: @escaping @MainActor @Sendable ([JSONValue]) async -> Void) {
         tasks.append(Task { [rpc] in
+            await ready?.value   // never subscribe past a still-queued stop() (see start())
             let stream = await rpc.subscribe(channel)
             for await args in stream {
                 if Task.isCancelled { break }

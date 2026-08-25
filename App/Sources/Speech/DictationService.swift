@@ -211,6 +211,12 @@ public struct DictationSheet: View {
                 permissionDenied = !ok
                 if ok { try? recorder.start() }
             }
+            .onDisappear {
+                // Interactive swipe-dismiss never hits the Cancel button — the mic must not stay
+                // hot after the sheet is gone (recording auto-starts in .task above). Discarding
+                // the buffer is correct: nothing may be sent without an explicit tap (SPEC §7.6).
+                if recorder.isRecording { _ = recorder.stop() }
+            }
         }
     }
 

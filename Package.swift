@@ -26,7 +26,16 @@ let package = Package(
             name: "NodetermKitTests",
             dependencies: ["NodetermKit"],
             swiftSettings: [
-                .swiftLanguageMode(.v6)
+                .swiftLanguageMode(.v6),
+                // Toolchain-environment workaround (same class as the rpaths below): the
+                // CommandLineTools toolchain keeps the swift-testing MACRO plugin
+                // (libTestingMacros.dylib) under host/plugins/testing/, which is off the default
+                // plugin search path — without it the @Test macro fails to resolve whenever the
+                // test target recompiles. A nonexistent path (full Xcode) is simply ignored.
+                .unsafeFlags([
+                    "-plugin-path",
+                    "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing"
+                ])
             ],
             // Toolchain-environment workaround (NOT a third-party dependency): this machine has
             // only Apple CommandLineTools. swift-testing's runtime ships there but is not on any
