@@ -208,8 +208,10 @@ public final class AppEnvironment: ObservableObject {
         runtimes.filter { $0.connectionState == .connected }
     }
 
-    /// All HOME session rows across every connected server, grouped per SPEC §6.3.
-    public var groupedSessions: [(section: SessionSection, rows: [SessionRow])] {
-        SessionListModel.grouped(connectedRuntimes.flatMap { $0.sessionRows })
+    /// All HOME session rows across every connected server, grouped by project (desktop-sidebar
+    /// shape; status is the per-row badge — see SessionListModel.groupedByProject).
+    public var groupedSessions: [(title: String, rows: [SessionRow])] {
+        SessionListModel.groupedByProject(connectedRuntimes.flatMap { $0.sessionRows },
+                                          multiServer: profiles.count > 1)
     }
 }

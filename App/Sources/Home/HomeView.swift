@@ -52,8 +52,8 @@ public struct HomeView: View {
     @ToolbarContentBuilder private var headerToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             HStack(spacing: 8) {
-                Image(systemName: "square.grid.2x2.fill").foregroundStyle(Theme.accent)
-                Text("nodeterm").font(.headline.bold()).foregroundStyle(Theme.textPrimary)
+                Image("LogoMark").resizable().scaledToFit().frame(width: 22, height: 22)
+                Text("Remote Claude").font(.headline.bold()).foregroundStyle(Theme.textPrimary)
             }
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
@@ -89,13 +89,14 @@ public struct HomeView: View {
             if grouped.isEmpty {
                 EmptyHint("No live sessions on connected servers yet.")
             } else {
-                ForEach(grouped, id: \.section) { group in
-                    Text(group.section.rawValue.uppercased())
+                ForEach(grouped, id: \.title) { group in
+                    Text(group.title.uppercased())
                         .font(.caption.weight(.semibold)).foregroundStyle(Theme.textTertiary)
                         .padding(.top, 4)
                     VStack(spacing: 0) {
                         ForEach(group.rows) { row in
-                            SessionRowView(row: row, showServer: env.profiles.count > 1)
+                            // Server already rides the group title on multi-server setups.
+                            SessionRowView(row: row, showServer: false)
                             if row.id != group.rows.last?.id { Divider().background(Theme.separator) }
                         }
                     }

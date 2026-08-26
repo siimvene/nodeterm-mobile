@@ -86,6 +86,22 @@ public enum SessionListModel {
 
     /// Group + sort for display (SPEC §6.3): section by reduced state; within a section newest-first
     /// by `lastTransitionAt`, missing clocks last (no invented timestamp), then stable by title.
+    /// HOME grouping: by PROJECT (server first when several are connected), preserving workspace
+    /// order — the desktop sidebar's shape. Status stays a per-row badge: on the phone most rows
+    /// sit in `unknown` anyway (desktop-spawned sessions report hooks to the desktop instance),
+    /// so status sections degenerated into one big UNKNOWN list.
+    public static func groupedByProject(_ rows: [SessionRow], multiServer: Bool)
+        -> [(title: String, rows: [SessionRow])] {
+        var order: [String] = []
+        var buckets: [String: [SessionRow]] = [:]
+        for row in rows {
+            let title = multiServer ? "\(row.serverName) · \(row.projectName)" : row.projectName
+            if buckets[title] == nil { order.append(title) }
+            buckets[title, default: []].append(row)
+        }
+        return order.map { (title: $0, rows: buckets[$0]!) }
+    }
+
     public static func grouped(_ rows: [SessionRow]) -> [(section: SessionSection, rows: [SessionRow])] {
         SessionSection.allCases.compactMap { section in
             let inSection = rows
