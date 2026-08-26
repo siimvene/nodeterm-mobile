@@ -108,37 +108,41 @@ public struct HomeView: View {
                     let collapsed = collapsedProjects.contains(group.title)
                     let agents = group.rows.filter { $0.agentId != nil }.count
                     let busy = group.rows.filter { $0.status?.state == .working }.count
-                    Button { withAnimation(.snappy(duration: 0.2)) { toggleCollapsed(group.title) } } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "chevron.right")
-                                .font(.caption2.weight(.bold))
-                                .rotationEffect(.degrees(collapsed ? 0 : 90))
-                                .foregroundStyle(Theme.textTertiary)
-                            Text(group.title.uppercased())
-                                .font(.caption.weight(.semibold)).foregroundStyle(Theme.textTertiary)
-                            Spacer()
-                            if busy > 0 {
-                                Text("\(busy) running")
-                                    .font(.caption2.weight(.semibold)).foregroundStyle(Theme.running)
+                    // One card per project: a full-weight, 44pt disclosure header, sessions
+                    // nested inside the same card when expanded (desktop sidebar's tree row).
+                    VStack(spacing: 0) {
+                        Button { withAnimation(.snappy(duration: 0.2)) { toggleCollapsed(group.title) } } label: {
+                            HStack(spacing: 10) {
+                                Circle().fill(Theme.accent).frame(width: 8, height: 8)
+                                Text(group.title)
+                                    .font(.body.weight(.semibold)).foregroundStyle(Theme.textPrimary)
+                                Spacer()
+                                if busy > 0 {
+                                    Text("\(busy) running")
+                                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.running)
+                                }
+                                Text(agents > 0 ? "\(group.rows.count) · \(agents) \(agents == 1 ? "agent" : "agents")"
+                                                : "\(group.rows.count)")
+                                    .font(.caption).foregroundStyle(Theme.textTertiary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.bold))
+                                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+                                    .foregroundStyle(Theme.textTertiary)
                             }
-                            Text(agents > 0 ? "\(group.rows.count) · \(agents) agents"
-                                            : "\(group.rows.count)")
-                                .font(.caption2).foregroundStyle(Theme.textTertiary)
+                            .padding(.horizontal, 14).padding(.vertical, 13)
+                            .contentShape(Rectangle())
                         }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, 4)
-                    if !collapsed {
-                        VStack(spacing: 0) {
+                        .buttonStyle(.plain)
+                        if !collapsed {
+                            Divider().background(Theme.separator)
                             ForEach(group.rows) { row in
                                 // Server already rides the group title on multi-server setups.
                                 SessionRowView(row: row, showServer: false)
                                 if row.id != group.rows.last?.id { Divider().background(Theme.separator) }
                             }
                         }
-                        .card()
                     }
+                    .card()
                 }
             }
         }
