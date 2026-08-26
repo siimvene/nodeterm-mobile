@@ -88,6 +88,9 @@ public struct SwiftTermView: UIViewRepresentable {
 
     public func makeUIView(context: Context) -> TerminalView {
         let view = ScrollableTerminalView(frame: .zero)   // adds the missing swipe→wheel scroll path
+        // SwiftTerm ships its own keyboard accessory bar (esc/ctrl/tab/…); ours (AccessoryToolbar)
+        // covers the phone use case — showing both stacked two toolbars over the keyboard.
+        view.inputAccessoryView = nil
         view.terminalDelegate = context.coordinator
         view.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         applyTheme(to: view)
