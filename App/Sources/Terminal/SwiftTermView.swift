@@ -32,6 +32,13 @@ public final class TerminalHandle {
         }
     }
 
+    /// Dismiss / summon the soft keyboard. The terminal view is the first responder; nothing in
+    /// SwiftTerm's own UI ever resigns it, so without this the keyboard is stuck until the user
+    /// leaves the screen.
+    public func setKeyboardVisible(_ visible: Bool) {
+        if visible { _ = view?.becomeFirstResponder() } else { _ = view?.resignFirstResponder() }
+    }
+
     /// Apply the authoritative co-attach grid (SPEC §7.3): resize the emulator to exactly this grid.
     /// (Letterboxing the slack is a follow-up — see SYMBOLS.md gaps.)
     public func applyGrid(cols: Int, rows: Int) {

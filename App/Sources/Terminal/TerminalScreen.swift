@@ -173,13 +173,21 @@ struct AccessoryToolbar: View {
     let onMic: () -> Void
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(settings.toolbarKeys) { key in keyButton(key) }
-                // Shift+Enter is a hardware-keyboard chord (SPEC §7.6) surfaced as a soft key.
-                pill("⇧⏎") { haptic(); vm.sendShiftEnter() }
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(settings.toolbarKeys) { key in keyButton(key) }
+                    // Shift+Enter is a hardware-keyboard chord (SPEC §7.6) surfaced as a soft key.
+                    pill("⇧⏎") { haptic(); vm.sendShiftEnter() }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
+            // Pinned outside the scroll: the ONE way to put the keyboard away without leaving
+            // the screen (the terminal view never resigns first responder on its own).
+            pill("", systemImage: "keyboard.chevron.compact.down") {
+                haptic(); vm.handle.setKeyboardVisible(false)
+            }
+            .padding(.trailing, 12)
         }
         .background(Theme.card.ignoresSafeArea(edges: .bottom))
     }
