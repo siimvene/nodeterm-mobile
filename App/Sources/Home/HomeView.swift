@@ -49,13 +49,10 @@ public struct HomeView: View {
 
     // MARK: Header
 
+    // iOS 26's Liquid Glass toolbar wraps each item in a tight capsule chip — a logo+text HStack
+    // gets clipped into a circle. The brand therefore lives in the page content (greeting row);
+    // the toolbar keeps only the gear, which a chip suits.
     @ToolbarContentBuilder private var headerToolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            HStack(spacing: 8) {
-                Image("LogoMark").resizable().scaledToFit().frame(width: 22, height: 22)
-                Text("Remote Claude").font(.headline.bold()).foregroundStyle(Theme.textPrimary)
-            }
-        }
         ToolbarItemGroup(placement: .topBarTrailing) {
             Button { showSettings = true } label: { Image(systemName: "gearshape") }
                 .tint(Theme.textSecondary)
@@ -64,6 +61,11 @@ public struct HomeView: View {
 
     private var greeting: some View {
         VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image("LogoMark").resizable().scaledToFit().frame(width: 22, height: 22)
+                Text("Remote Claude").font(.headline.bold()).foregroundStyle(Theme.textSecondary)
+            }
+            .padding(.bottom, 6)
             Text("Welcome back").font(.largeTitle.bold()).foregroundStyle(Theme.textPrimary)
             Text("Your terminals, wherever you are.")
                 .font(.subheadline).foregroundStyle(Theme.textSecondary)
