@@ -23,11 +23,20 @@ final class ScrollableTerminalView: TerminalView {
         super.init(frame: frame)
         let pan = UIPanGestureRecognizer(target: self, action: #selector(scrollPan(_:)))
         pan.maximumNumberOfTouches = 1
-        addGestureRecognizer(pan)
         scrollGesture = pan
-        // SwiftTerm's own pans (drag-report + selection) yield to a vertical scroll.
-        for g in gestureRecognizers ?? [] where g is UIPanGestureRecognizer && g !== pan {
-            g.require(toFail: pan)
+        addGestureRecognizer(pan)
+    }
+
+    /// SwiftTerm attaches its drag pans LAZILY — `panMouseGesture` only appears when the app
+    /// turns mouse mode on, long after init — so a one-time require(toFail:) sweep at init sees
+    /// an empty list and the drag recognizer then outcompetes the scroll. Route EVERY future
+    /// pan through the subordination instead: any pan that is not ours yields to the scroll
+    /// (which fails fast for non-vertical drags and while a selection is active, so selection
+    /// drags still win exactly where they should).
+    override func addGestureRecognizer(_ g: UIGestureRecognizer) {
+        super.addGestureRecognizer(g)
+        if let mine = scrollGesture, g is UIPanGestureRecognizer, g !== mine {
+            g.require(toFail: mine)
         }
     }
 
