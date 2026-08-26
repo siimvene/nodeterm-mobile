@@ -198,6 +198,9 @@ struct AccessoryToolbar: View {
         case .tab: pill("Tab") { haptic(); vm.writeRaw("\t") }
         case .ctrl:
             pill("Ctrl", active: vm.ctrlLatched) { haptic(); vm.ctrlLatched.toggle() }
+        case .upDown:
+            pill("↑") { haptic(); vm.writeRaw("\u{1b}[A") }
+            pill("↓") { haptic(); vm.writeRaw("\u{1b}[B") }
         case .arrows:
             pill("←") { haptic(); vm.writeRaw("\u{1b}[D") }
             pill("↓") { haptic(); vm.writeRaw("\u{1b}[B") }

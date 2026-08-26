@@ -22,14 +22,20 @@ public final class AppSettings: ObservableObject {
 
     /// A toolbar accessory key the user can enable/order (SPEC §9.3 / §9.4 Input).
     public enum ToolbarKey: String, CaseIterable, Identifiable, Codable, Sendable {
-        case esc, tab, ctrl, arrows, paste, mic
+        case esc, tab, ctrl, upDown, arrows, paste, mic
         public var id: String { rawValue }
         public var label: String {
             switch self {
             case .esc: return "Esc"; case .tab: return "Tab"; case .ctrl: return "Ctrl"
-            case .arrows: return "Arrows"; case .paste: return "Paste"; case .mic: return "Mic"
+            case .upDown: return "↑↓"; case .arrows: return "Arrows (all 4)"
+            case .paste: return "Paste"; case .mic: return "Mic"
             }
         }
+
+        /// Default set, sized for the phone's main job — reading a Claude session and answering
+        /// it: Esc (interrupt/back out), ↑↓ (pick options, recall history), Paste, Mic. Tab, Ctrl
+        /// and the full arrow cluster stay opt-in via Settings → Toolbar.
+        public static let defaultSet: [ToolbarKey] = [.esc, .upDown, .paste, .mic]
     }
 
     /// Dictation engine choice (SPEC §9.5). `.apple` is on-device default; `.serverWhisper` is the
@@ -71,7 +77,7 @@ public final class AppSettings: ObservableObject {
     public var toolbarKeys: [ToolbarKey] {
         get {
             guard let decoded = try? JSONDecoder().decode([ToolbarKey].self, from: toolbarOrderData),
-                  !decoded.isEmpty else { return ToolbarKey.allCases }
+                  !decoded.isEmpty else { return ToolbarKey.defaultSet }
             return decoded
         }
         set {
