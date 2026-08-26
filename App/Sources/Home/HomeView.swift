@@ -26,7 +26,6 @@ public struct HomeView: View {
                     statTiles
                     sessionsSection
                     serversSection
-                    DiscoverCarousel()
                 }
                 .padding(16)
             }
@@ -334,28 +333,3 @@ struct ServerRowView: View {
     }
 }
 
-/// The three static education cards (SPEC §9.1 DISCOVER). No product upsell.
-struct DiscoverCarousel: View {
-    private let cards = [
-        ("bolt.horizontal.circle", "tmux Sessions", "Your sessions keep running even when the app is closed."),
-        ("clock.arrow.circlepath", "Scrollback", "History is restored after reboots — pick up where you left off."),
-        ("mic.circle", "Voice → Terminal", "Dictate commands on-device or via your server's whisper."),
-    ]
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("Discover")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(cards, id: \.1) { card in
-                        VStack(alignment: .leading, spacing: 10) {
-                            Image(systemName: card.0).font(.title2).foregroundStyle(Theme.accent)
-                            Text(card.1).font(.headline).foregroundStyle(Theme.textPrimary)
-                            Text(card.2).font(.caption).foregroundStyle(Theme.textSecondary)
-                        }
-                        .frame(width: 220, alignment: .leading).padding(16).card(elevated: true)
-                    }
-                }
-            }
-        }
-    }
-}
