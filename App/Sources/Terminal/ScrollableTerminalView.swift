@@ -33,12 +33,19 @@ final class ScrollableTerminalView: TerminalView {
 
     /// Governs EVERY recognizer on this view — scope the vertical-intent test strictly to OUR
     /// pan and defer everything else to the base class, or SwiftTerm's own drags break.
+    ///
+    /// Split rule: an ACTIVE selection always wins (a vertical drag then extends it — scroll
+    /// resumes when it is dismissed); otherwise any predominantly-vertical drag scrolls. Both
+    /// velocity and accumulated translation vote, because a thumb drag often starts slow and
+    /// slightly diagonal — the launch velocity alone misclassified those as selection drags.
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
         guard g === scrollGesture, let pan = g as? UIPanGestureRecognizer else {
             return super.gestureRecognizerShouldBegin(g)
         }
+        if selectionActive { return false }
         let v = pan.velocity(in: self)
-        return abs(v.y) > abs(v.x) * 1.5   // vertical intent only; sideways drags stay SwiftTerm's
+        let t = pan.translation(in: self)
+        return abs(v.y) > abs(v.x) || abs(t.y) > abs(t.x)
     }
 
     private var lineHeight: CGFloat {
