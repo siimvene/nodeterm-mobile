@@ -84,6 +84,19 @@ public struct HomeView: View {
 
     // MARK: Sessions (SPEC §9.1 / §6.3)
 
+    /// Collapsed project groups, persisted across launches (desktop-sidebar parity: disclosure
+    /// per project). Keyed by group title, machine-local — same tier as the desktop's
+    /// sidebarCollapsedItems.
+    @AppStorage("home.collapsedProjects") private var collapsedProjectsRaw = ""
+    private var collapsedProjects: Set<String> {
+        Set(collapsedProjectsRaw.split(separator: "\u{1f}").map(String.init))
+    }
+    private func toggleCollapsed(_ title: String) {
+        var set = collapsedProjects
+        if set.contains(title) { set.remove(title) } else { set.insert(title) }
+        collapsedProjectsRaw = set.sorted().joined(separator: "\u{1f}")
+    }
+
     private var sessionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader("Sessions")
@@ -92,17 +105,40 @@ public struct HomeView: View {
                 EmptyHint("No live sessions on connected servers yet.")
             } else {
                 ForEach(grouped, id: \.title) { group in
-                    Text(group.title.uppercased())
-                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.textTertiary)
-                        .padding(.top, 4)
-                    VStack(spacing: 0) {
-                        ForEach(group.rows) { row in
-                            // Server already rides the group title on multi-server setups.
-                            SessionRowView(row: row, showServer: false)
-                            if row.id != group.rows.last?.id { Divider().background(Theme.separator) }
+                    let collapsed = collapsedProjects.contains(group.title)
+                    let agents = group.rows.filter { $0.agentId != nil }.count
+                    let busy = group.rows.filter { $0.status?.state == .working }.count
+                    Button { withAnimation(.snappy(duration: 0.2)) { toggleCollapsed(group.title) } } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.bold))
+                                .rotationEffect(.degrees(collapsed ? 0 : 90))
+                                .foregroundStyle(Theme.textTertiary)
+                            Text(group.title.uppercased())
+                                .font(.caption.weight(.semibold)).foregroundStyle(Theme.textTertiary)
+                            Spacer()
+                            if busy > 0 {
+                                Text("\(busy) running")
+                                    .font(.caption2.weight(.semibold)).foregroundStyle(Theme.running)
+                            }
+                            Text(agents > 0 ? "\(group.rows.count) · \(agents) agents"
+                                            : "\(group.rows.count)")
+                                .font(.caption2).foregroundStyle(Theme.textTertiary)
                         }
+                        .contentShape(Rectangle())
                     }
-                    .card()
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
+                    if !collapsed {
+                        VStack(spacing: 0) {
+                            ForEach(group.rows) { row in
+                                // Server already rides the group title on multi-server setups.
+                                SessionRowView(row: row, showServer: false)
+                                if row.id != group.rows.last?.id { Divider().background(Theme.separator) }
+                            }
+                        }
+                        .card()
+                    }
                 }
             }
         }
