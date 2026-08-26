@@ -46,58 +46,75 @@ public final class AppSettings: ObservableObject {
         public var label: String { self == .apple ? "Apple on-device" : "Server whisper" }
     }
 
-    @AppStorage("term.theme") private var themeRaw: String = TerminalTheme.dark.rawValue
-    /// Default font size 13 pt (SPEC §8.3 / §9.4).
-    @AppStorage("term.fontSize") public var fontSize: Double = 13
-    @AppStorage("term.bell") public var bellEnabled: Bool = true
-    @AppStorage("term.blockCursor") public var blockCursor: Bool = true
+    // ── Persistence ──────────────────────────────────────────────────────────
+    // NOT @AppStorage: that wrapper only publishes inside a View — in an ObservableObject it
+    // writes UserDefaults silently and `objectWillChange` never fires, so Settings changes
+    // persisted but no screen re-rendered (the original bug). @Published + didSet-persist gives
+    // both halves: observation for SwiftUI, UserDefaults for restarts.
 
-    @AppStorage("input.hapticKeys") public var hapticKeys: Bool = true
-    /// The default speech engine; a per-server override lives in `serverSpeechEngine`.
-    @AppStorage("input.speechEngine") private var speechEngineRaw: String = SpeechEngine.apple.rawValue
+    private static let d = UserDefaults.standard
 
-    @AppStorage("notify.completion") public var notifyOnCompletion: Bool = true
-    @AppStorage("notify.needsYou") public var notifyOnNeedsYou: Bool = true
-
-    /// Ordered toolbar keys (JSON in UserDefaults). Default order matches SPEC §9.3.
-    @AppStorage("input.toolbarOrder") private var toolbarOrderData: Data = Data()
-    /// Per-server whisper opt-in (serverProfileId → engine). JSON in UserDefaults.
-    @AppStorage("input.serverSpeech") private var serverSpeechData: Data = Data()
-
-    public var theme: TerminalTheme {
-        get { TerminalTheme(rawValue: themeRaw) ?? .dark }
-        set { themeRaw = newValue.rawValue; objectWillChange.send() }
+    @Published public var fontSize: Double {
+        didSet { Self.d.set(fontSize, forKey: "term.fontSize") }
     }
-
-    public var defaultSpeechEngine: SpeechEngine {
-        get { SpeechEngine(rawValue: speechEngineRaw) ?? .apple }
-        set { speechEngineRaw = newValue.rawValue; objectWillChange.send() }
+    @Published public var bellEnabled: Bool {
+        didSet { Self.d.set(bellEnabled, forKey: "term.bell") }
     }
-
-    public var toolbarKeys: [ToolbarKey] {
-        get {
-            guard let decoded = try? JSONDecoder().decode([ToolbarKey].self, from: toolbarOrderData),
-                  !decoded.isEmpty else { return ToolbarKey.defaultSet }
-            return decoded
-        }
-        set {
-            toolbarOrderData = (try? JSONEncoder().encode(newValue)) ?? Data()
-            objectWillChange.send()
-        }
+    @Published public var blockCursor: Bool {
+        didSet { Self.d.set(blockCursor, forKey: "term.blockCursor") }
+    }
+    @Published public var hapticKeys: Bool {
+        didSet { Self.d.set(hapticKeys, forKey: "input.hapticKeys") }
+    }
+    @Published public var notifyOnCompletion: Bool {
+        didSet { Self.d.set(notifyOnCompletion, forKey: "notify.completion") }
+    }
+    @Published public var notifyOnNeedsYou: Bool {
+        didSet { Self.d.set(notifyOnNeedsYou, forKey: "notify.needsYou") }
+    }
+    @Published public var theme: TerminalTheme {
+        didSet { Self.d.set(theme.rawValue, forKey: "term.theme") }
+    }
+    @Published public var defaultSpeechEngine: SpeechEngine {
+        didSet { Self.d.set(defaultSpeechEngine.rawValue, forKey: "input.speechEngine") }
+    }
+    @Published public var toolbarKeys: [ToolbarKey] {
+        didSet { Self.d.set((try? JSONEncoder().encode(toolbarKeys)) ?? Data(), forKey: "input.toolbarOrder") }
+    }
+    @Published private var serverSpeech: [String: String] {
+        didSet { Self.d.set((try? JSONEncoder().encode(serverSpeech)) ?? Data(), forKey: "input.serverSpeech") }
     }
 
     /// Effective speech engine for a server: its override if set, else the default.
     public func speechEngine(forServer profileId: String) -> SpeechEngine {
-        let map = (try? JSONDecoder().decode([String: String].self, from: serverSpeechData)) ?? [:]
-        return map[profileId].flatMap(SpeechEngine.init(rawValue:)) ?? defaultSpeechEngine
+        serverSpeech[profileId].flatMap(SpeechEngine.init(rawValue:)) ?? defaultSpeechEngine
     }
 
     public func setSpeechEngine(_ engine: SpeechEngine, forServer profileId: String) {
-        var map = (try? JSONDecoder().decode([String: String].self, from: serverSpeechData)) ?? [:]
-        map[profileId] = engine.rawValue
-        serverSpeechData = (try? JSONEncoder().encode(map)) ?? serverSpeechData
-        objectWillChange.send()
+        serverSpeech[profileId] = engine.rawValue
     }
 
-    public init() {}
+    public init() {
+        let d = Self.d
+        fontSize = d.object(forKey: "term.fontSize") as? Double ?? 13   // default 13 pt (§8.3/§9.4)
+        bellEnabled = d.object(forKey: "term.bell") as? Bool ?? true
+        blockCursor = d.object(forKey: "term.blockCursor") as? Bool ?? true
+        hapticKeys = d.object(forKey: "input.hapticKeys") as? Bool ?? true
+        notifyOnCompletion = d.object(forKey: "notify.completion") as? Bool ?? true
+        notifyOnNeedsYou = d.object(forKey: "notify.needsYou") as? Bool ?? true
+        theme = (d.string(forKey: "term.theme")).flatMap(TerminalTheme.init(rawValue:)) ?? .dark
+        defaultSpeechEngine = (d.string(forKey: "input.speechEngine")).flatMap(SpeechEngine.init(rawValue:)) ?? .apple
+        if let data = d.data(forKey: "input.toolbarOrder"),
+           let decoded = try? JSONDecoder().decode([ToolbarKey].self, from: data), !decoded.isEmpty {
+            toolbarKeys = decoded
+        } else {
+            toolbarKeys = ToolbarKey.defaultSet
+        }
+        if let data = d.data(forKey: "input.serverSpeech"),
+           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
+            serverSpeech = decoded
+        } else {
+            serverSpeech = [:]
+        }
+    }
 }
