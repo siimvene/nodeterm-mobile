@@ -165,7 +165,20 @@ public final class AppEnvironment: ObservableObject {
     public func login(_ profile: ServerProfile, password: String, rememberPassword: Bool) async throws {
         let cookie = try await auth.login(baseURL: profile.baseURL, password: password)
         try keychain.saveCookie(cookie, forServer: profile.id)
-        if rememberPassword { try keychain.savePassword(password, forServer: profile.id) }
+        if rememberPassword {
+            try keychain.savePassword(password, forServer: profile.id)
+        } else {
+            // Disabling retention must DELETE the stored password, or silent auto-reauth keeps
+            // using it forever (consort finding).
+            try? keychain.deletePassword(forServer: profile.id)
+        }
+        // Persist the choice onto the profile so future auto-reauth honors it.
+        if profile.rememberPassword != rememberPassword {
+            var updated = profile
+            updated.rememberPassword = rememberPassword
+            try? profileStore.update(updated)
+            profiles = (try? profileStore.all()) ?? profiles
+        }
         reauthNeeded = nil
         // Fresh runtime — the transport factory captured the OLD cookie (see reauth()).
         dropRuntime(id: profile.id)

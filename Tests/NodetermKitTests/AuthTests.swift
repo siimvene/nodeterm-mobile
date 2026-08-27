@@ -91,9 +91,12 @@ public func runLoginClassificationTests() {
     // Bad request: 400 → badRequest (client bug, §3.2).
     expect(C.classifyLogin(statusCode: 400, setCookieHeaders: []) == .badRequest, "400 → bad request")
 
-    // A 200 with a valid cookie also reads as success (success is judged by the cookie, §3.2).
+    // Success is the SPEC's exact 303+cookie shape (consort finding): a cookie on any other
+    // status (a proxy error page, say) must NOT be adopted as a session — fails closed.
     if case .success = C.classifyLogin(statusCode: 200,
-        setCookieHeaders: ["nt_session=\(hex)"]) {} else { expect(false, "200+cookie → success") }
+        setCookieHeaders: ["nt_session=\(hex)"]) { expect(false, "200+cookie must NOT be success") }
+    expect(C.classifyLogin(statusCode: 200, setCookieHeaders: ["nt_session=\(hex)"]) == .badRequest,
+           "cookie without 303 fails closed")
 
     // Error mapping to AuthError.
     expect(C.loginError(for: .wrongPassword) == .wrongPassword, "map wrongPassword")

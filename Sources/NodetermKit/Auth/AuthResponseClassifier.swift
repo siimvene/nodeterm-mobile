@@ -26,12 +26,16 @@ public enum AuthResponseClassifier {
         // session cookie, and treating a 400 as "wrong password" would hide a client bug (§3.2).
         if statusCode == 429 { return .rateLimited }
         if statusCode == 400 { return .badRequest }
-        if let cookie = SetCookieParser.value(named: NodetermWire.sessionCookieName,
+        // Success is the SPEC's exact shape — 303 + Set-Cookie. A cookie on any other status
+        // (a proxy error page, say) must not be adopted as a session (consort finding).
+        if statusCode == 303,
+           let cookie = SetCookieParser.value(named: NodetermWire.sessionCookieName,
                                               inHeaders: setCookieHeaders) {
             return .success(cookie: cookie)
         }
-        // No session cookie ⇒ the error redirect (§3.2). Anything unexpected also fails closed here.
-        return .wrongPassword
+        if statusCode == 303 { return .wrongPassword }   // the error redirect (§3.2)
+        return .badRequest                                // anything else fails closed
+
     }
 
     /// The outcome of a `POST /auth/setup` (SPEC §3.1).

@@ -81,11 +81,19 @@ public struct AddServerView: View {
     /// Normalize + validate the base URL (SPEC §2.1: prefer https; plain http only for localhost).
     private var parsedURL: URL? {
         let trimmed = urlText.trimmingCharacters(in: .whitespaces)
-        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
-              url.host != nil else { return nil }
+        guard var comps = URLComponents(string: trimmed), let scheme = comps.scheme?.lowercased(),
+              comps.host != nil else { return nil }
+        // Strip credentials/query BEFORE persisting (consort finding): a pasted
+        // `https://user:pass@host` or token-bearing query would otherwise land in plaintext
+        // Application Support storage (and its backups). The base URL is host+port, nothing else.
+        comps.user = nil
+        comps.password = nil
+        comps.query = nil
+        comps.fragment = nil
+        guard let url = comps.url else { return nil }
         if scheme == "https" { return url }
         if scheme == "http" {
-            let host = url.host()?.lowercased() ?? ""
+            let host = comps.host?.lowercased() ?? ""
             let isLocal = host == "localhost" || host == "127.0.0.1"
             return (insecureHTTP && isLocal) ? url : nil
         }

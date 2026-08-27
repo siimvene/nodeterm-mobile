@@ -42,6 +42,23 @@ public final class TerminalSessionVM: ObservableObject {
     private var lastCols = 0
     private var lastRows = 0
     private var didCreate = false
+    /// The session is KNOWN dead (pty:closed, or recycle with ready:false) — no reconnect may
+    /// re-create it (consort finding #8). Split from didCreate so a TRANSIENT initial-attach
+    /// failure still retries on the next reconnect (consort finding #13).
+    private var permanentlyClosed = false
+    private var attemptedJoin = false
+    /// Outbound op chain (consort finding): writes/resizes/park/kill each used to spawn an
+    /// independent Task, and unstructured tasks carry no ordering guarantee — rapid keystrokes
+    /// could reach the actor out of order. Every outbound op now appends to ONE chain.
+    private var outboundTail: Task<Void, Never> = Task {}
+
+    private func enqueueOutbound(_ op: @escaping @Sendable () async -> Void) {
+        let prev = outboundTail
+        outboundTail = Task {
+            await prev.value
+            await op()
+        }
+    }
     private var connectionObserver: Task<Void, Never>?
 
     public init(runtime: ServerRuntime, row: SessionRow) {
@@ -80,7 +97,7 @@ public final class TerminalSessionVM: ObservableObject {
         tasks.forEach { $0.cancel() }; tasks.removeAll()
         let sid = sessionId, vid = viewerId
         if !sid.isEmpty {
-            Task { [control] in await control.kill(sessionId: sid, viewerId: vid) }
+            enqueueOutbound { [control] in await control.kill(sessionId: sid, viewerId: vid) }
         }
         // A create still in flight is handled by join()'s post-create check: it sends the kill
         // itself once the sessionId is known (SPEC §7.4).
@@ -90,7 +107,7 @@ public final class TerminalSessionVM: ObservableObject {
     public func park() {
         guard !sessionId.isEmpty else { return }
         let sid = sessionId, vid = viewerId
-        Task { [control] in await control.park(sessionId: sid, viewerId: vid) }
+        enqueueOutbound { [control] in await control.park(sessionId: sid, viewerId: vid) }
     }
 
     /// Return from background: report a real size again (SPEC §7.3).
@@ -101,12 +118,18 @@ public final class TerminalSessionVM: ObservableObject {
     // MARK: Join / seed paint (SPEC §7.1/§7.2)
 
     private func join(isReconnect: Bool) async {
+        attemptedJoin = true
+        guard !permanentlyClosed else { return }
         let options = PtyCreateOptions(
             cols: lastCols, rows: lastRows,
             persistKey: persistKey, viewerId: viewerId,
-            cwd: row.cwd, ownerProjectId: row.projectId,
+            // Project-cwd fallback (consort finding): a cold spawn of a cwd-less node must land
+            // in the project folder, not the server's $HOME — under the REAL persistent node id.
+            cwd: row.cwd ?? row.projectCwd, ownerProjectId: row.projectId,
             agentId: row.agentId, accountId: row.accountId,
-            requireRemote: isSSHProject ? true : nil)   // §7.1 refuse-phantom-shell for SSH nodes
+            // §7.1 refuse-phantom-shell: node-level sshRemoteTmux counts, not just the project
+            // (consort finding — a remote-tmux node can live in a non-SSH project).
+            requireRemote: (isSSHProject || row.sshRemoteTmux) ? true : nil)
 
         let result: PtyCreateResult
         do { result = try await control.create(options) } catch {
@@ -122,7 +145,7 @@ public final class TerminalSessionVM: ObservableObject {
         if tornDown {
             let vid = viewerId
             let sid = result.sessionId
-            if !sid.isEmpty { Task { [control] in await control.kill(sessionId: sid, viewerId: vid) } }
+            if !sid.isEmpty { enqueueOutbound { [control] in await control.kill(sessionId: sid, viewerId: vid) } }
             return
         }
 
@@ -170,12 +193,22 @@ public final class TerminalSessionVM: ObservableObject {
             self?.phase = .exited(code)
         }
         subscribeEv("pty:closed:\(sid)") { [weak self] args in
-            self?.phase = .closed(by: args.first?["by"]?.intValue)
+            guard let self else { return }
+            self.phase = .closed(by: args.first?["by"]?.intValue)
+            // The session is GONE: a later reconnect must not re-issue pty:create for it —
+            // that would spawn an unintended replacement (consort finding).
+            self.permanentlyClosed = true
         }
         subscribeEv("pty:recycled:\(sid)") { [weak self] args in
             guard let self else { return }
             let ready = args.first?["ready"]?.boolValue ?? false
-            if ready { Task { await self.rejoin() } }                 // re-attach replacement (§7.5)
+            if ready {
+                Task { await self.rejoin() }                          // re-attach replacement (§7.5)
+            } else {
+                // ready:false = no replacement ever came (SPEC §7.5) — same latch as closed.
+                self.phase = .unavailable("Session ended")
+                self.permanentlyClosed = true
+            }
         }
     }
 
@@ -198,7 +231,10 @@ public final class TerminalSessionVM: ObservableObject {
             for await state in states {
                 if Task.isCancelled { break }
                 guard let self else { break }
-                if state == .connected, await self.didCreateFlag {
+                // Retry on reconnect whenever an attach was ATTEMPTED and the session is not
+                // known-dead — a transient initial-create failure must heal on the next socket,
+                // not stay "Couldn't attach" until remount (consort finding #13).
+                if state == .connected, await self.shouldRejoinFlag {
                     await self.rejoin()   // re-issue pty:create, reset-before-paint (SPEC §4.8 step 3)
                 }
             }
@@ -207,6 +243,7 @@ public final class TerminalSessionVM: ObservableObject {
 
     /// `didCreate` read hopped to the main actor (the observer Task is not main-isolated).
     private var didCreateFlag: Bool { didCreate }
+    private var shouldRejoinFlag: Bool { attemptedJoin && !permanentlyClosed }
 
     private func rejoin() async {
         guard !tornDown else { return }
@@ -227,9 +264,9 @@ public final class TerminalSessionVM: ObservableObject {
         let text = String(decoding: data, as: UTF8.self)
         switch TerminalInputRouting.delivery(for: .keystroke(text)) {
         case .write(let raw):
-            Task { [control] in await control.write(sessionId: sid, data: raw) }
+            enqueueOutbound { [control] in await control.write(sessionId: sid, data: raw) }
         case .sendText(let framed, let enter):
-            Task { [control] in _ = try? await control.sendText(persistKey: pkey, text: framed, enter: enter) }
+            enqueueOutbound { [control] in _ = try? await control.sendText(persistKey: pkey, text: framed, enter: enter) }
         }
     }
 
@@ -237,7 +274,7 @@ public final class TerminalSessionVM: ObservableObject {
     public func writeRaw(_ text: String) {
         guard !sessionId.isEmpty else { return }
         let sid = sessionId
-        Task { [control] in await control.write(sessionId: sid, data: text) }
+        enqueueOutbound { [control] in await control.write(sessionId: sid, data: text) }
     }
 
     /// Shift+Enter → ESC+CR so agent CLIs insert a newline instead of submitting (SPEC §7.6).
@@ -262,7 +299,7 @@ public final class TerminalSessionVM: ObservableObject {
         lastCols = c; lastRows = r
         guard !sessionId.isEmpty else { return }
         let sid = sessionId, vid = viewerId
-        Task { [control] in await control.resize(sessionId: sid, cols: c, rows: r, viewerId: vid) }
+        enqueueOutbound { [control] in await control.resize(sessionId: sid, cols: c, rows: r, viewerId: vid) }
     }
 
     // MARK: Clipboard (SPEC §7.7)

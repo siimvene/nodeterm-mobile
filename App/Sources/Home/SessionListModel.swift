@@ -15,6 +15,10 @@ public struct SessionRow: Identifiable, Sendable, Equatable {
     public var agentId: String?
     public var cwd: String?
     public var accountId: String?
+    /// Project-level cwd fallback for a cold spawn (SPEC §7.1; consort finding).
+    public var projectCwd: String?
+    /// Node runs in remote tmux — attachment must set requireRemote (consort finding).
+    public var sshRemoteTmux: Bool
     public var status: AgentNodeStatus?
 
     /// Row id must be unique across servers (node ids are only per-launch unique — SPEC §7.4).
@@ -30,7 +34,8 @@ public struct SessionRow: Identifiable, Sendable, Equatable {
 
     public init(serverId: String, serverName: String, projectId: String, projectName: String,
                 nodeId: String, title: String, agentId: String? = nil, cwd: String? = nil,
-                accountId: String? = nil, status: AgentNodeStatus? = nil) {
+                accountId: String? = nil, projectCwd: String? = nil,
+                sshRemoteTmux: Bool = false, status: AgentNodeStatus? = nil) {
         self.serverId = serverId
         self.serverName = serverName
         self.projectId = projectId
@@ -40,6 +45,8 @@ public struct SessionRow: Identifiable, Sendable, Equatable {
         self.agentId = agentId
         self.cwd = cwd
         self.accountId = accountId
+        self.projectCwd = projectCwd
+        self.sshRemoteTmux = sshRemoteTmux
         self.status = status
     }
 }
@@ -78,6 +85,7 @@ public enum SessionListModel {
                     projectId: project.id, projectName: project.name,
                     nodeId: node.id, title: node.title,
                     agentId: node.agentId, cwd: node.cwd, accountId: node.accountId,
+                    projectCwd: project.cwd, sshRemoteTmux: node.sshRemoteTmux == true,
                     status: status(node.id)))
             }
         }

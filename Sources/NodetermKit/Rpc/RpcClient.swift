@@ -113,12 +113,31 @@ public actor RpcClient: RpcClienting {
         guard state == .connected, transport != nil else {
             throw RpcError.disconnected                          // §4.6/§4.8: no live socket
         }
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSONValue, Error>) in
-            // Runs synchronously under actor isolation: register BEFORE the send hop so a close
-            // that races the send can still reject this id (§4.8.1).
-            pending[id] = cont
-            Task { [weak self] in await self?.deliver(id: id, text: framedText) }
+        // Timeout + caller-cancellation cleanup (consort finding): a server that withholds a
+        // response must not pin the continuation (and whatever awaits it) in `pending` forever,
+        // and a cancelled caller must release its slot instead of leaking until socket close.
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSONValue, Error>) in
+                // Runs synchronously under actor isolation: register BEFORE the send hop so a close
+                // that races the send can still reject this id (§4.8.1).
+                pending[id] = cont
+                Task { [weak self] in await self?.deliver(id: id, text: framedText) }
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: RpcClient.requestTimeoutNs)
+                    await self?.expirePending(id: id)
+                }
+            }
+        } onCancel: {
+            Task { [weak self] in await self?.expirePending(id: id) }
         }
+    }
+
+    /// 60 s: generous for slow hosts, finite for dead ones. Fires only if the id is still pending.
+    static let requestTimeoutNs: UInt64 = 60_000_000_000
+
+    private func expirePending(id: Int) {
+        guard let cont = pending.removeValue(forKey: id) else { return }
+        cont.resume(throwing: RpcError.disconnected)
     }
 
     public func cast(_ method: String, _ args: [RpcArg]) async {
@@ -157,7 +176,12 @@ public actor RpcClient: RpcClienting {
 
     public func subscribe(_ channel: String) async -> AsyncStream<[JSONValue]> {
         let id = UUID()
-        let (stream, cont) = AsyncStream.makeStream(of: [JSONValue].self)
+        // Bounded (consort finding): a producer outrunning a consumer must drop OLD events, not
+        // grow without limit — badge state is last-write-wins, so dropping stale entries is safe.
+        // Bound = the early-replay cap: a fresh subscriber may legitimately receive that many
+        // entries in one replay burst before its for-await starts draining.
+        let (stream, cont) = AsyncStream.makeStream(of: [JSONValue].self,
+                                                    bufferingPolicy: .bufferingNewest(NodetermWire.earlyEventBufferCap))
         let firstForChannel = (evSubs[channel]?.isEmpty ?? true)
         evSubs[channel, default: [:]][id] = cont
         cont.onTermination = { [weak self] _ in
@@ -182,7 +206,10 @@ public actor RpcClient: RpcClienting {
 
     public func ptyData(for sessionId: String) async -> AsyncStream<Data> {
         let id = UUID()
-        let (stream, cont) = AsyncStream.makeStream(of: Data.self)
+        // Bounded (consort finding): a flooding pane must not balloon client memory. Newest wins
+        // — losing intermediate paints costs a redraw, never correctness (tmux repaints).
+        let (stream, cont) = AsyncStream.makeStream(of: Data.self,
+                                                    bufferingPolicy: .bufferingNewest(2048))
         let firstForSession = (ptySubs[sessionId]?.isEmpty ?? true)
         ptySubs[sessionId, default: [:]][id] = cont
         cont.onTermination = { [weak self] _ in
@@ -343,8 +370,15 @@ public actor RpcClient: RpcClienting {
         }
         var buf = earlyPty[sessionId] ?? []
         buf.append(payload)
+        // Count AND byte caps (consort finding): the count cap alone let a few near-8MiB frames
+        // stack per session before any subscriber existed. Oldest dropped — a late subscriber
+        // repaints from the create-result screen anyway.
         if buf.count > NodetermWire.earlyEventBufferCap {
             buf.removeFirst(buf.count - NodetermWire.earlyEventBufferCap)
+        }
+        var bytes = buf.reduce(0) { $0 + $1.count }
+        while bytes > 4 * 1024 * 1024, !buf.isEmpty {
+            bytes -= buf.removeFirst().count
         }
         earlyPty[sessionId] = buf
     }

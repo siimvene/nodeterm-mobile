@@ -91,7 +91,13 @@ public final class ServerProfileStore: ServerProfileStoring, Sendable {
             throw ServerProfileStoreError.storageUnavailable
         }
         if data.isEmpty { return [] }
-        return (try? JSONDecoder().decode([ServerProfile].self, from: data)) ?? []
+        if let decoded = try? JSONDecoder().decode([ServerProfile].self, from: data) { return decoded }
+        // Corrupt, non-empty file: sideline it (desktop's `.corrupt-<ts>` convention) so the next
+        // write can never silently erase what the user had — the data stays recoverable on disk
+        // (consort finding).
+        let sidelined = fileURL.appendingPathExtension("corrupt-\(Int(Date().timeIntervalSince1970))")
+        try? FileManager.default.moveItem(at: fileURL, to: sidelined)
+        return []
     }
 
     /// Atomic write (SPEC §8.1/§10): encode, then `Data.write(options: .atomic)` — a temp file is

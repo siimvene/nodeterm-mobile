@@ -140,6 +140,9 @@ public struct SwiftTermView: UIViewRepresentable {
         // SwiftTerm hands us already-decoded OSC 52 WRITE content; a read query is never delivered
         // here (SPEC §7.7 write-only).
         public func clipboardCopy(source: TerminalView, content: Data) {
+            // Clamp (consort finding): a hostile OSC52 could push an enormous blob at the system
+            // clipboard; 1 MB covers any legitimate copy.
+            guard content.count <= 1_000_000 else { return }
             if let text = String(data: content, encoding: .utf8) { parent.onClipboardWrite(text) }
         }
 

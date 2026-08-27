@@ -58,6 +58,10 @@ public struct CanvasNodeState: Codable, Sendable, Equatable {
     public var tags: [String]?
     /// Group-frame parent id.
     public var parentId: String?
+    /// The node's session runs in REMOTE tmux on an SSH host — attachment must pass
+    /// `requireRemote` so the server refuses instead of spawning a phantom local shell
+    /// (SPEC §7.1/§11.2; consort finding — this was only derivable from the project before).
+    public var sshRemoteTmux: Bool?
 
     public init(
         id: String,
@@ -69,7 +73,8 @@ public struct CanvasNodeState: Codable, Sendable, Equatable {
         accountId: String? = nil,
         agentSessionId: String? = nil,
         tags: [String]? = nil,
-        parentId: String? = nil
+        parentId: String? = nil,
+        sshRemoteTmux: Bool? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -81,6 +86,7 @@ public struct CanvasNodeState: Codable, Sendable, Equatable {
         self.agentSessionId = agentSessionId
         self.tags = tags
         self.parentId = parentId
+        self.sshRemoteTmux = sshRemoteTmux
     }
 }
 

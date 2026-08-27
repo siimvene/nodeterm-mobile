@@ -58,7 +58,13 @@ extension JSONValue {
     public var boolValue: Bool? { if case .bool(let b) = self { return b }; return nil }
     public var doubleValue: Double? { if case .number(let n) = self { return n }; return nil }
     /// Number narrowed to `Int` (JSON has no integer type; use for ids/counts/timestamps).
-    public var intValue: Int? { if case .number(let n) = self { return Int(n) }; return nil }
+    /// Guarded: `Int(Double)` TRAPS on out-of-range values, so a hostile/buggy server sending
+    /// `1e300` would crash the client (consort finding). Non-integral or out-of-range → nil.
+    public var intValue: Int? {
+        guard case .number(let n) = self, n.isFinite, n == n.rounded(),
+              n >= -9_007_199_254_740_991, n <= 9_007_199_254_740_991 else { return nil }
+        return Int(n)
+    }
     public var arrayValue: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
     public var objectValue: [String: JSONValue]? { if case .object(let o) = self { return o }; return nil }
 
