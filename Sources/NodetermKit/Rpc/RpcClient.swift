@@ -92,7 +92,12 @@ public actor RpcClient: RpcClienting {
         // Clear BEFORE rejecting (SPEC §4.8.1).
         failAllPending()
         setState(.offline)
-        finishAllStreams()
+        // Data streams die with the run (their subscribers re-create them on rejoin), but the
+        // CONNECTION-STATE streams survive stop/start on purpose: a long-lived observer — the
+        // terminal VM's rejoin loop — must still hear the `.connected` after a background stop →
+        // foreground start cycle. Finishing them here was the frozen-after-background bug: the
+        // observer's for-await ended silently and the re-attach never fired.
+        finishDataStreams()
     }
 
     // MARK: RpcClienting — request / cast
@@ -361,11 +366,11 @@ public actor RpcClient: RpcClienting {
         for (_, cont) in conts { cont.resume(throwing: RpcError.disconnected) }
     }
 
-    private func finishAllStreams() {
+    private func finishDataStreams() {
         for (_, subs) in evSubs { for (_, c) in subs { c.finish() } }
         for (_, subs) in ptySubs { for (_, c) in subs { c.finish() } }
-        for (_, c) in stateSubs { c.finish() }
-        evSubs.removeAll(); ptySubs.removeAll(); stateSubs.removeAll()
+        // stateSubs deliberately NOT touched — those streams outlive the run (see stop()).
+        evSubs.removeAll(); ptySubs.removeAll()
         earlyEvents.removeAll(); earlyPty.removeAll()
     }
 }

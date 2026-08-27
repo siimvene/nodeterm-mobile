@@ -132,6 +132,35 @@ public func runRpcClientTests() async {
     await testConnectionStateReachesConnectedThenOffline()
     await testClientRestartsAfterStop()
     await testAbandonedTransportsAreClosed()
+    await testStateStreamSurvivesStopStart()
+}
+
+// The frozen-after-background bug: a connectionStates stream subscribed BEFORE a stop()
+// (app backgrounded) must still deliver the `.connected` of the NEXT start() (foreground) —
+// the terminal VM's rejoin observer lives on that stream for the life of the screen.
+private func testStateStreamSurvivesStopStart() async {
+    let client = RpcClient(makeTransport: { FakeTransport() })
+    let states = await client.connectionStates()
+    let collector = Task { () -> [ConnectionState] in
+        var seen: [ConnectionState] = []
+        for await st in states {
+            seen.append(st)
+            if seen.filter({ $0 == .connected }).count == 2 { break }
+        }
+        return seen
+    }
+
+    await client.start()
+    expect(await waitUntilConnected(client), "first run connects")
+    await client.stop()
+    expect(await client.connectionState() == .offline, "offline after stop")
+    await client.start()
+    expect(await waitUntilConnected(client), "second run connects")
+
+    let seen = await collector.value
+    expect(seen.filter { $0 == .connected }.count == 2, "original stream saw BOTH connects")
+    expect(seen.contains(.offline), "and the offline between them")
+    await client.stop()
 }
 
 // §4.8.1 — every in-flight request fails with .disconnected on close
