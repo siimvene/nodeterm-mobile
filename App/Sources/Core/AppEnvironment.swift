@@ -9,6 +9,9 @@ import NodetermKit
 public final class AppEnvironment: ObservableObject {
 
     public let settings: AppSettings
+    private let notifications = NotificationService()
+    /// Last-seen per-node status across all servers — the previous half of the edge detector.
+    private var lastStatuses: [String: AgentNodeStatus] = [:]
     private let profileStore: ServerProfileStoring
     private let keychain: KeychainStoring
     private let auth: AuthClienting
@@ -81,10 +84,43 @@ public final class AppEnvironment: ObservableObject {
         // Relay the runtime's change notifications so HOME/server-detail (which observe only
         // AppEnvironment) re-render on live workspace/status/connection updates (SPEC §9.1/§6.3).
         runtimeObservers[profile.id] = runtime.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
+            guard let self else { return }
+            self.objectWillChange.send()
+            self.runNotificationPass()
         }
         runtimes.append(runtime)
         runtime.start()
+    }
+
+    /// Ask for notification permission once (call from the app's first appear).
+    public func enableNotifications() {
+        notifications.requestAuthorizationIfNeeded()
+    }
+
+    /// Aggregate every server's live statuses, diff against the last pass, and fire local
+    /// notifications for finished / needs-you edges (SPEC §6.3 #8 / §9.6). The app-icon badge is
+    /// kept at the total unread count. Runs on the main actor off the runtimes' change relay.
+    private func runNotificationPass() {
+        var merged: [String: AgentNodeStatus] = [:]
+        for runtime in runtimes { for (id, st) in runtime.statuses { merged[id] = st } }
+        let prefs = NotifyPrefs(onFinished: settings.notifyOnCompletion,
+                                onNeedsYou: settings.notifyOnNeedsYou)
+        let pending = pendingNotifications(previous: lastStatuses, current: merged, prefs: prefs)
+        lastStatuses = merged
+        notifications.deliver(pending, badgeCount: unreadBadgeCount(merged)) { [weak self] nodeId in
+            self?.sessionTitle(forNode: nodeId)
+        }
+    }
+
+    /// Best display name for a node: its persisted title from whichever server holds it.
+    private func sessionTitle(forNode nodeId: String) -> String? {
+        for runtime in runtimes {
+            if let p = runtime.workspace?.projects.first(where: { $0.nodes.contains { $0.id == nodeId } }),
+               let node = p.nodes.first(where: { $0.id == nodeId }) {
+                return node.title
+            }
+        }
+        return nil
     }
 
     /// Drop a runtime AND its change relay (the two must live and die together).

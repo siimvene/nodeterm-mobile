@@ -34,6 +34,7 @@ struct NodetermMobileApp: App {
                 .environmentObject(settings)
                 .preferredColorScheme(.dark)   // SPEC §9: dark app
                 .tint(Theme.accent)
+                .onAppear { environment.enableNotifications() }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
