@@ -1,77 +1,77 @@
-# nodeterm-mobile
+# Remote Claude
 
-Native iOS client for a self-hosted **nodeterm Server Edition**. This repository is the build
-skeleton: a dependency-free Swift package (`NodetermKit`) that fixes every wire type and protocol,
-plus an iOS app target that five parallel builders fill in.
+A native iOS client for a self-hosted **nodeterm Server Edition** — attach to your
+terminal sessions and Claude Code (or Codex / Gemini / …) agents from your phone,
+over your own network. No relay, no cloud middleman: the app talks straight to a
+server you run, at an address you configure (a Tailscale MagicDNS name works well).
 
-The single source of truth is **[`docs/SPEC.md`](docs/SPEC.md)** — the standalone, normative iOS
-client specification. Every normative behavior in the code cites its section (e.g. `// SPEC §7.1`).
+Built in Swift (SwiftUI + [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)),
+with a dependency-free protocol core (`NodetermKit`) that is unit-tested on macOS.
 
-## Layout
+> Companion app for a self-hosted nodeterm server. This repository is the **client only** —
+> it speaks the server's WebSocket-RPC protocol.
+
+---
+
+## What it does
+
+- **Multi-server** — add any number of self-hosted servers, each a profile with its
+  own base URL and password. Session cookies live in the iOS Keychain, scoped per
+  server profile; nothing is stored in `UserDefaults` or synced.
+- **Live sessions, grouped by project** — collapsible project cards with per-project
+  session/agent counts and a running counter fed by live agent status over the wire.
+- **Real terminals** — each session is a live co-attached tmux view via SwiftTerm.
+  Touch-scroll through history, drag to select, an accessory toolbar for the keys a
+  soft keyboard lacks (Esc, arrows, Paste, Mic, ⇧⏎), and a one-tap keyboard dismiss.
+- **Account usage** — Settings → Usage shows every managed account's rate-limit
+  windows (session / weekly / per-model), forwarded live from the server.
+- **Local notifications** — a banner + app-icon badge when an agent finishes or
+  needs your response, while the app is alive. (No push server, so nothing arrives
+  when the app is fully closed — that would need APNs.)
+- **Dictation** — on-device Apple speech, or the server's own Whisper as a per-server
+  alternative. Review before sending; nothing auto-submits.
+
+## Architecture
 
 ```
-Package.swift                 Swift 6, library product NodetermKit, iOS 17 / macOS 14, NO deps
-Sources/NodetermKit/
-  Models/                     All wire types (SPEC §11) — Codable, Sendable, tolerant decoding
-  Contracts.swift             The FIXED protocols builders implement against (SPEC §5/§7/§8)
-Tests/NodetermKitTests/       Codec smoke checks (see the testing note below)
-App/Sources/                  iOS app target (SwiftUI @main placeholder; builder 5 replaces it)
-project.yml                   xcodegen config for the app target (SwiftTerm 1.15.0, Info.plist)
-docs/SPEC.md                  The normative specification
+Sources/NodetermKit/     Dependency-free protocol + domain core (tested with `swift test`)
+  Rpc/                   WS-RPC frame codec, RpcClient actor, reconnect, binary pty frames
+  Auth/  Keychain/       Login + cookie handling, Keychain storage
+  Stores/                Agent-status badge reducer, notification-edge detector
+  Terminal/              Co-attach viewer contract (create-options, seed-paint, park/kill)
+  Models/                Wire types (Codable, tolerant decoding)
+App/Sources/             SwiftUI app: Home, terminal screen, Settings, dictation, notifications
 ```
 
-`NodetermKit` MUST stay free of third-party dependencies. SwiftTerm (pinned to **exact 1.15.0**)
-is an App-target dependency only.
+The design principle: **pure, testable logic in `NodetermKit`; iOS-only glue in `App/`.**
+The protocol core has no UIKit/SwiftUI dependency and runs its full suite under
+`swift test` on any Mac.
 
-## Building the package (here, on macOS)
+House rules the code holds to: Swift 6 with complete strict concurrency (actors for
+shared mutable state, `Sendable` value types), no force-unwraps outside tests, no
+third-party dependency beyond SwiftTerm (App target only — `NodetermKit` stays
+dependency-free), and secrets never in logs.
 
-```bash
-swift build
-swift test --disable-swift-testing
+## Build
+
+```sh
+swift test                    # runs the NodetermKit suite (macOS)
+brew install xcodegen         # once
+xcodegen generate             # produces NodetermMobile.xcodeproj (gitignored)
+open NodetermMobile.xcodeproj # build/run the iOS app in Xcode
 ```
 
-`swift build` compiles the library. The test target compiles too, but see the caveat below.
+Device builds use automatic signing with your own team; open the generated project
+and select your signing team. iOS targets can't be compiled from the CommandLineTools
+CLI — build the app in Xcode.
 
-### Testing caveat (CommandLineTools-only host)
+## Connecting to a server
 
-`swift build` and the test-target compile work on a machine with only Apple CommandLineTools.
-Running tests does **not**: CommandLineTools ships neither `XCTest.framework` nor
-`Testing.framework` at runtime, so plain `swift test` fails while trying to `dlopen`
-`Testing.framework`, and there are no runnable test cases regardless.
+You need a running nodeterm Server Edition reachable from your phone. Point the app
+at the server's `https://…` address (over Tailscale, a reverse proxy, or your LAN)
+and sign in with the server's password. The client is fully unlocked — no
+subscription, quota, or entitlement system.
 
-- On a CommandLineTools-only host, use `swift test --disable-swift-testing` — it builds the tests
-  and exits 0 (zero discovered tests).
-- On a full Xcode toolchain, plain `swift test` runs. To make the codec smoke checks in
-  `Tests/NodetermKitTests/WireCodecTests.swift` execute, a builder adds `import Testing` (or
-  `import XCTest`) and wraps `runWireCodecSmoke()` in a `@Test` / `XCTestCase` — the assertions are
-  already written.
+## License
 
-## Building the iOS app
-
-There is no Xcode on the CI/dev host, so the `.xcodeproj` is generated on demand and is
-**gitignored** (never committed):
-
-```bash
-xcodegen generate      # writes NodetermMobile.xcodeproj from project.yml
-open NodetermMobile.xcodeproj
-```
-
-The app target (`NodetermMobile`, bundle id `dev.nodeterm.mobile`, iOS 17+, SwiftUI lifecycle)
-depends on the local `NodetermKit` package and on SwiftTerm 1.15.0. iOS targets cannot be compiled
-from the CommandLineTools CLI — build the app in Xcode.
-
-## House rules (enforced across all builders)
-
-- Swift 6 language mode, complete strict concurrency. Actors for shared mutable state; `Sendable`
-  value types. `@unchecked Sendable` only with a comment proving why.
-- No force-unwraps outside tests.
-- No third-party dependencies beyond SwiftTerm (App target only). `NodetermKit` stays dep-free.
-- Secrets never in logs; redact `Cookie` / `Set-Cookie` in any debug output (SPEC §10).
-- Comments in English. Every normative behavior cites its spec section.
-- **The protocol signatures in `Contracts.swift` are FINAL** — builders implement against them and
-  MUST NOT change them.
-
-## What this is NOT (SPEC §1)
-
-No subscription/quota/"Unlock"/"Pair Desktop"/"Restore Purchase", no entitlement system, no relay
-or `api.nodeterm.dev`. The self-host build is fully unlocked.
+MIT — see [`LICENSE`](LICENSE). SwiftTerm is a separate dependency under its own MIT license.
