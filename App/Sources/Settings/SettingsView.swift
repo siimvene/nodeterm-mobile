@@ -16,6 +16,7 @@ public struct SettingsView: View {
             Form {
                 terminalSection
                 inputSection
+                usageSection
                 notificationsSection
                 integrationsSection
                 aboutSection
@@ -60,6 +61,14 @@ public struct SettingsView: View {
                 NavigationLink("Server whisper (per server)") { PerServerSpeechView() }
             }
             Toggle("Haptic keys", isOn: $settings.hapticKeys)
+        }
+    }
+
+    // MARK: Usage — account rate-limit stats forwarded from the desktop (usage:update).
+
+    private var usageSection: some View {
+        Section("Usage") {
+            NavigationLink("Account usage") { UsageView() }
         }
     }
 

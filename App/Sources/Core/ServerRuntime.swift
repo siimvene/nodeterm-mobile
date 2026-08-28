@@ -25,6 +25,8 @@ public final class ServerRuntime: ObservableObject, Identifiable {
     @Published public private(set) var workspace: Workspace?
     /// nodeId → reduced status, republished after every reducer fold (SPEC §6.3).
     @Published public private(set) var statuses: [String: AgentNodeStatus] = [:]
+    /// Account rate-limit usage, forwarded from the desktop over `usage:update` (Settings → Usage).
+    @Published public private(set) var accountUsage: [AccountUsage] = []
 
     /// The session currently shown full-screen — its `onScreen` flag governs unread-setting (§6.3 #8).
     public var onScreenNodeId: String?
@@ -157,6 +159,11 @@ public final class ServerRuntime: ObservableObject, Identifiable {
             guard let self, let nodeId = args.first?.stringValue else { return }
             await self.reducer.clearUnread(nodeId: nodeId)   // clear WITHOUT re-acking (§6.3 #8)
             await self.republishStatuses()
+        }
+        subscribe("usage:update", after: ready) { [weak self] args in
+            guard let self, let first = args.first,
+                  let update = try? first.decoded(as: AccountUsageUpdate.self) else { return }
+            self.accountUsage = update.accounts   // desktop-authoritative snapshot; render as-is
         }
         subscribe("canvas:mut", after: ready) { [weak self] args in
             guard let self, args.count >= 2, let projectId = args[0].stringValue,
