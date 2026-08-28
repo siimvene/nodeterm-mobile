@@ -33,9 +33,10 @@ public final class AppSettings: ObservableObject {
         }
 
         /// Default set, sized for the phone's main job — reading a Claude session and answering
-        /// it: Esc (interrupt/back out), ↑↓ (pick options, recall history), Paste, Mic. Tab, Ctrl
-        /// and the full arrow cluster stay opt-in via Settings → Toolbar.
-        public static let defaultSet: [ToolbarKey] = [.esc, .upDown, .paste, .mic]
+        /// it: Esc (interrupt/back out), Tab (accept the greyed-out ghost suggestion / complete —
+        /// the same key that accepts it on desktop), ↑↓ (pick options, recall history), Paste, Mic.
+        /// Ctrl and the full arrow cluster stay opt-in via Settings → Toolbar.
+        public static let defaultSet: [ToolbarKey] = [.esc, .tab, .upDown, .paste, .mic]
     }
 
     /// Dictation engine choice (SPEC §9.5). `.apple` is on-device default; `.serverWhisper` is the
