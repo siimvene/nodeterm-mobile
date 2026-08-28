@@ -103,11 +103,14 @@ private struct LimitBar: View {
     }
 
     private var resetText: String? {
-        guard let ms = limit.resetsAt, ms > 0 else { return nil }
+        guard let ms = limit.resetsAt, ms.isFinite, ms > 0 else { return nil }
         let interval = ms / 1000 - Date().timeIntervalSince1970
+        // Clamp before Int(): Int(Double) TRAPS on an out-of-range value (a hostile/buggy
+        // `resetsAt: 1e308`) — cap at a week (consort finding).
         guard interval > 0 else { return "Resetting…" }
-        let h = Int(interval) / 3600
-        let m = (Int(interval) % 3600) / 60
+        let secs = Int(min(interval, 7 * 24 * 3600))
+        let h = secs / 3600
+        let m = (secs % 3600) / 60
         if h >= 24 { return "Resets in \(h / 24)d \(h % 24)h" }
         if h >= 1 { return "Resets in \(h)h \(m)m" }
         return "Resets in \(m)m"

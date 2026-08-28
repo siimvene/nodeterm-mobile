@@ -38,6 +38,27 @@ public struct AccountUsage: Codable, Sendable, Equatable, Identifiable {
     public var updatedAt: Double
     public var limits: [AccountUsageLimit]
 
+    // Tolerant decode: a single account missing/mangling an optional-in-practice field must not
+    // reject the WHOLE snapshot and strand every account on stale data (consort finding).
+    private enum CodingKeys: String, CodingKey {
+        case accountId, label, email, agentId, status, updatedAt, limits
+    }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        accountId = try c.decodeIfPresent(String.self, forKey: .accountId) ?? nil
+        label = try c.decodeIfPresent(String.self, forKey: .label)
+        email = try c.decodeIfPresent(String.self, forKey: .email)
+        agentId = (try? c.decode(String.self, forKey: .agentId)) ?? "claude"
+        status = (try? c.decode(String.self, forKey: .status)) ?? "ok"
+        updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+        limits = (try? c.decode([AccountUsageLimit].self, forKey: .limits)) ?? []
+    }
+    public init(accountId: String?, label: String?, email: String?, agentId: String,
+                status: String, updatedAt: Double, limits: [AccountUsageLimit]) {
+        self.accountId = accountId; self.label = label; self.email = email
+        self.agentId = agentId; self.status = status; self.updatedAt = updatedAt; self.limits = limits
+    }
+
     /// Row id: the account id, or a stable token for the (single) system row.
     public var id: String { accountId ?? "system:\(agentId)" }
 

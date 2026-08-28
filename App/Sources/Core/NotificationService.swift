@@ -14,29 +14,28 @@ final class NotificationService {
     private let center = UNUserNotificationCenter.current()
     private var authorized = false
 
-    /// Ask once. Cheap to call repeatedly — the system remembers the grant.
-    func requestAuthorizationIfNeeded() {
-        Task { @MainActor in
-            let status = await center.notificationSettings().authorizationStatus
-            switch status {
-            case .authorized, .provisional, .ephemeral:
-                self.authorized = true
-            case .notDetermined:
-                self.authorized = (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
-            default:
-                self.authorized = false
-            }
+    /// Ask once. Cheap to call repeatedly — the system remembers the grant. Awaitable so the
+    /// caller can gate its notification pass on the resolved grant (consort finding).
+    func requestAuthorizationIfNeeded() async {
+        let status = await center.notificationSettings().authorizationStatus
+        switch status {
+        case .authorized, .provisional, .ephemeral:
+            authorized = true
+        case .notDetermined:
+            authorized = (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
+        default:
+            authorized = false
         }
     }
 
     /// Fire the notifications a status batch produced, and update the app-icon badge. `nameFor`
     /// resolves a node id to a human title (session name / node title) for the banner body.
-    func deliver(_ pending: [PendingNotification], badgeCount: Int, nameFor: (String) -> String?) {
+    func deliver(_ pending: [PendingNotification], badgeCount: Int, nameFor: (PendingNotification) -> String?) {
         setBadge(badgeCount)
         guard authorized, !pending.isEmpty else { return }
         for p in pending {
             let content = UNMutableNotificationContent()
-            let name = nameFor(p.nodeId) ?? "A session"
+            let name = nameFor(p) ?? "A session"
             switch p.kind {
             case .finished:
                 content.title = "Session finished"
@@ -46,10 +45,10 @@ final class NotificationService {
                 content.body = name
             }
             content.sound = .default
-            content.userInfo = ["nodeId": p.nodeId]
-            // A nil trigger fires immediately. The id is per-edge so a re-fire for the same node
-            // replaces the previous banner instead of stacking.
-            let req = UNNotificationRequest(identifier: "edge:\(p.nodeId)", content: content, trigger: nil)
+            content.userInfo = ["serverId": p.serverId, "nodeId": p.nodeId]
+            // Composite id (consort finding): two servers can share a node id, and the identifier
+            // must not collide (a re-fire replaces the same session's prior banner, not another's).
+            let req = UNNotificationRequest(identifier: "edge:\(p.key)", content: content, trigger: nil)
             center.add(req)
         }
     }

@@ -160,7 +160,7 @@ public final class ServerRuntime: ObservableObject, Identifiable {
             await self.reducer.clearUnread(nodeId: nodeId)   // clear WITHOUT re-acking (§6.3 #8)
             await self.republishStatuses()
         }
-        subscribe("usage:update", after: ready) { [weak self] args in
+        subscribe("accounts:usage", after: ready) { [weak self] args in
             guard let self, let first = args.first,
                   let update = try? first.decoded(as: AccountUsageUpdate.self) else { return }
             self.accountUsage = update.accounts   // desktop-authoritative snapshot; render as-is
