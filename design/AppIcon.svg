@@ -1,0 +1,50 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17151F"/>
+      <stop offset="1" stop-color="#09090D"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.40" r="0.62">
+      <stop offset="0" stop-color="#A78BFA" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#A78BFA" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="paneBack" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#252230"/>
+      <stop offset="1" stop-color="#181620"/>
+    </linearGradient>
+    <linearGradient id="paneFront" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#312E3C"/>
+      <stop offset="1" stop-color="#211E2A"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.12"/>
+      <stop offset="0.16" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="drop" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="26" stdDeviation="32" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+
+  <!-- background -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+
+  <!-- back pane (up-left) -->
+  <g filter="url(#drop)">
+    <rect x="218" y="262" width="520" height="420" rx="60" fill="url(#paneBack)"/>
+  </g>
+
+  <!-- front pane (down-right) -->
+  <g filter="url(#drop)">
+    <rect x="278" y="336" width="520" height="420" rx="60" fill="url(#paneFront)"/>
+  </g>
+  <!-- top bevel sheen + purple rim on the front pane -->
+  <rect x="278" y="336" width="520" height="420" rx="60" fill="url(#sheen)"/>
+  <rect x="279" y="337" width="518" height="418" rx="59" fill="none" stroke="#A78BFA" stroke-opacity="0.22" stroke-width="2"/>
+
+  <!-- terminal prompt: chevron + cursor underscore -->
+  <g stroke="#A78BFA" stroke-width="42" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <polyline points="392,452 470,527 392,602"/>
+  </g>
+  <rect x="512" y="578" width="176" height="38" rx="19" fill="#A78BFA"/>
+</svg>
