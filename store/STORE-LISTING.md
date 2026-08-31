@@ -55,10 +55,10 @@ The app connects only to the server address you configure. There is no developer
 `https://github.com/siimvene/nodeterm-mobile`
 
 ## Marketing URL (optional)
-`https://siim.vene.ee/termscape`  *(only if a page goes up there; otherwise leave blank)*
+`https://siimvene.github.io/nodeterm-mobile/`
 
 ## Privacy Policy URL (REQUIRED)
-`https://siim.vene.ee/termscape/privacy.html`  *(target for the store/privacy.html deploy)*
+`https://siimvene.github.io/nodeterm-mobile/privacy.html`  *(GitHub Pages, gh-pages branch)*
 
 ---
 
