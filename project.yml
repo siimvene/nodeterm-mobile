@@ -38,11 +38,11 @@ targets:
         # Compile the REAL NodetermKit wiring in Factory.swift (stubs without it).
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) NODETERM_KIT_IMPL_READY"
         MARKETING_VERSION: "0.0.1"
-        CURRENT_PROJECT_VERSION: "1"
+        CURRENT_PROJECT_VERSION: "2"
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
-        TARGETED_DEVICE_FAMILY: "1,2"
+        TARGETED_DEVICE_FAMILY: "1"
         # App Store export compliance: the app uses only standard SSH/TLS encryption, which is
         # exempt. Declaring this here skips the per-build Compliance question in App Store Connect.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
@@ -51,11 +51,8 @@ targets:
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Termscape uses on-device speech recognition to turn your voice into terminal input."
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        # Apple requires explicit orientations for an iPad-capable bundle (validation error
-        # 90474). iPhone keeps the system default (portrait + both landscapes, no upside-down);
-        # iPad declares all four, as iPad multitasking demands.
+        # iPhone-only (device family 1): portrait + both landscapes, no upside-down.
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
 
   TermscapeUITests:
     type: bundle.ui-testing
