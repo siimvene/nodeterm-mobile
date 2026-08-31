@@ -51,6 +51,11 @@ targets:
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Termscape uses on-device speech recognition to turn your voice into terminal input."
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        # Apple requires explicit orientations for an iPad-capable bundle (validation error
+        # 90474). iPhone keeps the system default (portrait + both landscapes, no upside-down);
+        # iPad declares all four, as iPad multitasking demands.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
 
   TermscapeUITests:
     type: bundle.ui-testing
