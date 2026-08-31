@@ -23,8 +23,8 @@ with a dependency-free protocol core (`NodetermKit`) that is unit-tested on macO
 - **Real terminals** — each session is a live co-attached tmux view via SwiftTerm.
   Touch-scroll through history, drag to select, an accessory toolbar for the keys a
   soft keyboard lacks (Esc, arrows, Paste, Mic, ⇧⏎), and a one-tap keyboard dismiss.
-- **Account usage** — Settings → Usage shows every managed account's rate-limit
-  windows (session / weekly / per-model), forwarded live from the server.
+- **Account usage** — the Home dashboard (below the Servers block) shows every managed
+  account's rate-limit windows (session / weekly / per-model), forwarded live from the server.
 - **Local notifications** — a banner + app-icon badge when an agent finishes or
   needs your response, while the app is alive. (No push server, so nothing arrives
   when the app is fully closed — that would need APNs.)

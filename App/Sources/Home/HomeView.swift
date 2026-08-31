@@ -182,15 +182,18 @@ public struct HomeView: View {
     /// moved here from Settings so the dashboard surfaces it directly. Hidden entirely when no
     /// connected server is publishing usage, so it never shows an empty shell.
     @ViewBuilder private var usageSection: some View {
+        let connectedCount = env.runtimes.filter { $0.connectionState == .connected }.count
         let servers = env.runtimes.filter { $0.connectionState == .connected && !$0.accountUsage.isEmpty }
         if !servers.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader("Usage")
                 ForEach(servers, id: \.profile.id) { server in
                     VStack(alignment: .leading, spacing: 0) {
-                        // Name the host only when more than one is reporting — a single-server
-                        // setup (the common case) needs no redundant label.
-                        if servers.count > 1 {
+                        // Name the host whenever more than one is CONNECTED — attribution must not
+                        // depend on how many happen to be reporting usage (a single reporting card
+                        // among several connected hosts would otherwise be unlabeled, and read as
+                        // belonging to whichever host the user has in mind).
+                        if connectedCount > 1 {
                             HStack(spacing: 8) {
                                 Circle().fill(Theme.accent).frame(width: 8, height: 8)
                                 Text(server.profile.name)

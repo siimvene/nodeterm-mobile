@@ -55,7 +55,9 @@ struct LimitBar: View {
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Theme.card).frame(height: 6)
+                    // cardElevated, not card: the row now sits inside a .card() whose
+                    // background IS Theme.card, so a same-colour track would be invisible.
+                    Capsule().fill(Theme.cardElevated).frame(height: 6)
                     Capsule().fill(color)
                         .frame(width: max(0, geo.size.width * limit.leftPercent / 100), height: 6)
                 }
