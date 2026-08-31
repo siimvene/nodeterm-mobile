@@ -1,7 +1,7 @@
-# Remote Claude
+# Termscape
 
-A native iOS client for a self-hosted **nodeterm Server Edition** — attach to your
-terminal sessions and Claude Code (or Codex / Gemini / …) agents from your phone,
+**Termscape** is a native iOS client for a self-hosted **nodeterm Server Edition** — attach
+to your terminal sessions and Claude Code (or Codex / Gemini / …) agents from your phone,
 over your own network. No relay, no cloud middleman: the app talks straight to a
 server you run, at an address you configure (a Tailscale MagicDNS name works well).
 
@@ -57,8 +57,8 @@ dependency-free), and secrets never in logs.
 ```sh
 swift test                    # runs the NodetermKit suite (macOS)
 brew install xcodegen         # once
-xcodegen generate             # produces NodetermMobile.xcodeproj (gitignored)
-open NodetermMobile.xcodeproj # build/run the iOS app in Xcode
+xcodegen generate             # produces Termscape.xcodeproj (gitignored)
+open Termscape.xcodeproj      # build/run the iOS app in Xcode
 ```
 
 Device builds use automatic signing with your own team; open the generated project

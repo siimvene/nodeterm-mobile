@@ -63,7 +63,7 @@ public struct HomeView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Image("LogoMark").resizable().scaledToFit().frame(width: 22, height: 22)
-                Text("Remote Claude").font(.headline.bold()).foregroundStyle(Theme.textSecondary)
+                Text("Termscape").font(.headline.bold()).foregroundStyle(Theme.textSecondary)
             }
             .padding(.bottom, 6)
             Text("Welcome back").font(.largeTitle.bold()).foregroundStyle(Theme.textPrimary)

@@ -89,7 +89,7 @@ public struct SettingsView: View {
                 Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
                     .foregroundStyle(Theme.textSecondary) }
             NavigationLink("Open source licenses") { LicensesView() }
-            Link("nodeterm", destination: URL(string: "https://nodeterm.dev")!)
+            Link("Built on nodeterm", destination: URL(string: "https://nodeterm.dev")!)
         }
     }
 }
