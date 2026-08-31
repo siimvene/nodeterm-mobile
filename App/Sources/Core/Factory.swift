@@ -88,6 +88,32 @@ public enum Factory {
         fatalError("Factory.makeRuntime: define NODETERM_KIT_IMPL_READY and wire the concrete Kit types (see this file's header).")
         #endif
     }
+
+    /// Build the synthetic **demo** runtime (docs/DEMO-MODE.md): the SAME object graph as
+    /// `makeRuntime`, but with NO cookie and NO Keychain — the only difference is the transport
+    /// factory, which builds a `DemoFrameTransport` that opens offline and replays `DemoScript`.
+    /// Everything above the socket (`RpcClient`, the stores, `TerminalSessionController`, the
+    /// SwiftTerm view) is byte-identical to a live server, so a reviewer drives the real UI.
+    @MainActor
+    public static func makeDemoRuntime(settings: AppSettings,
+                                       deviceName: String) -> ServerRuntime {
+        #if NODETERM_KIT_IMPL_READY
+        // SPEC §4.8: RpcClient owns the reconnect loop, so it is handed a transport FACTORY. The
+        // demo factory needs no URL and no cookie — the synthetic transport is offline by design.
+        let rpc: RpcClienting = RpcClient(makeTransport: { DemoFrameTransport() })
+        let workspace: WorkspaceStoring = WorkspaceStore()
+        let reducer: AgentStatusReducing = AgentStatusStore()
+        let terminal: TerminalSessionControlling = TerminalSessionController(rpc: rpc)
+        let serverSpeech: SpeechTranscribing = ServerWhisperTranscriber(rpc: rpc)
+        let appleSpeech: SpeechTranscribing = AppleSpeechTranscriber()
+        return ServerRuntime(profile: DemoScript.profile, rpc: rpc, workspaceStore: workspace,
+                             reducer: reducer, terminal: terminal,
+                             appleSpeech: appleSpeech, serverSpeech: serverSpeech,
+                             deviceName: deviceName)
+        #else
+        fatalError("Factory.makeDemoRuntime: define NODETERM_KIT_IMPL_READY and wire the concrete Kit types (see this file's header).")
+        #endif
+    }
 }
 
 #if !NODETERM_KIT_IMPL_READY

@@ -64,6 +64,25 @@ public final class AppEnvironment: ObservableObject {
         runtimes.forEach { $0.stop() }
     }
 
+    // MARK: Demo mode (docs/DEMO-MODE.md)
+
+    /// Enter the offline demo: add the synthetic `isDemo` profile as an in-memory row (NEVER
+    /// persisted to `ProfileStore`, NEVER keychained) and connect it through `makeDemoRuntime`.
+    /// The reviewer drives the real UI — only the bytes below the socket are synthetic.
+    public func enterDemo() {
+        let profile = DemoScript.profile
+        guard runtime(for: profile.id) == nil else { return }
+        if !profiles.contains(where: { $0.id == profile.id }) { profiles.append(profile) }
+        connect(profile)   // isDemo branch builds a DemoFrameTransport-backed runtime
+    }
+
+    /// Leave the demo cleanly, returning HOME to the empty state with no phantom server: tear the
+    /// runtime down and drop the in-memory profile row (there was nothing on disk to remove).
+    public func exitDemo() {
+        dropRuntime(id: DemoScript.profile.id)
+        profiles.removeAll { $0.isDemo }
+    }
+
     private func connect(_ profile: ServerProfile) {
         // A runtime that already exists is RESTARTED, not skipped (SPEC §8.4): backgrounding
         // stops every runtime in place, so on foreground the same object must reconnect.
@@ -72,12 +91,19 @@ public final class AppEnvironment: ObservableObject {
             existing.start()
             return
         }
-        guard let cookie = try? keychain.cookie(forServer: profile.id) else {
-            // No stored cookie ⇒ server needs a login before it can connect (SPEC §3.5/§3.6).
-            return
-        }
-        let runtime = Factory.makeRuntime(profile: profile, cookie: cookie,
+        let runtime: ServerRuntime
+        if profile.isDemo {
+            // Demo (docs/DEMO-MODE.md): no cookie, no Keychain — the synthetic transport opens
+            // offline and replays DemoScript. The real cookie path below is untouched.
+            runtime = Factory.makeDemoRuntime(settings: settings, deviceName: deviceName)
+        } else {
+            guard let cookie = try? keychain.cookie(forServer: profile.id) else {
+                // No stored cookie ⇒ server needs a login before it can connect (SPEC §3.5/§3.6).
+                return
+            }
+            runtime = Factory.makeRuntime(profile: profile, cookie: cookie,
                                           settings: settings, deviceName: deviceName)
+        }
         runtime.onAuthRequired = { [weak self, weak runtime] in
             // Dead cookie (SPEC §3.5): pause the reconnect loop FIRST (stop hammering the dead
             // cookie at the backoff cap), then silently re-login when the user opted in.
@@ -243,6 +269,9 @@ public final class AppEnvironment: ObservableObject {
     /// Logout is best-effort server-side (token survives to TTL) but MUST delete local secrets
     /// (SPEC §3.4 / §9 rule 9 — the UI copy says the server session lives on).
     public func removeServer(_ profile: ServerProfile) async {
+        // The demo profile is in-memory only: no logout round-trip (its baseURL is synthetic — a
+        // real network call would fail), no Keychain, no on-disk record. Just tear it down.
+        if profile.isDemo { exitDemo(); return }
         dropRuntime(id: profile.id)
         if let cookie = try? keychain.cookie(forServer: profile.id) {
             await auth.logout(baseURL: profile.baseURL, cookie: cookie)

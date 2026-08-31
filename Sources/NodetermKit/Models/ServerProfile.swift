@@ -17,19 +17,57 @@ public struct ServerProfile: Codable, Sendable, Equatable, Identifiable, Hashabl
     public var rememberPassword: Bool
     /// Allow a plain-`http` localhost base (§2.1). Default false; MUST NOT be a "skip TLS" switch.
     public var insecureHTTP: Bool
+    /// Marks the synthetic **demo** profile (docs/DEMO-MODE.md). A demo server is driven by
+    /// `DemoFrameTransport` against `DemoScript` — no socket, no cookie — so it is NEVER persisted
+    /// to `ProfileStore` and NEVER writes the Keychain. Default false, and back-compatibly Codable:
+    /// a stored profile written before this field existed decodes with `isDemo == false` (the key
+    /// is optional on read), so the on-disk format is unchanged for real servers.
+    public var isDemo: Bool
 
     public init(id: String = UUID().uuidString,
                 name: String,
                 baseURL: URL,
                 autoConnect: Bool = true,
                 rememberPassword: Bool = false,
-                insecureHTTP: Bool = false) {
+                insecureHTTP: Bool = false,
+                isDemo: Bool = false) {
         self.id = id
         self.name = name
         self.baseURL = baseURL
         self.autoConnect = autoConnect
         self.rememberPassword = rememberPassword
         self.insecureHTTP = insecureHTTP
+        self.isDemo = isDemo
+    }
+
+    // Custom Codable so a PRE-`isDemo` JSON payload still decodes (the field is read via
+    // `decodeIfPresent`, defaulting to false). The other flags are likewise read leniently so a
+    // truncated legacy record maps onto the same defaults the memberwise `init` uses; `id`, `name`
+    // and `baseURL` remain required. Encoding writes every field, so a fresh round-trip is exact.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, baseURL, autoConnect, rememberPassword, insecureHTTP, isDemo
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        baseURL = try c.decode(URL.self, forKey: .baseURL)
+        autoConnect = try c.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? true
+        rememberPassword = try c.decodeIfPresent(Bool.self, forKey: .rememberPassword) ?? false
+        insecureHTTP = try c.decodeIfPresent(Bool.self, forKey: .insecureHTTP) ?? false
+        isDemo = try c.decodeIfPresent(Bool.self, forKey: .isDemo) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(baseURL, forKey: .baseURL)
+        try c.encode(autoConnect, forKey: .autoConnect)
+        try c.encode(rememberPassword, forKey: .rememberPassword)
+        try c.encode(insecureHTTP, forKey: .insecureHTTP)
+        try c.encode(isDemo, forKey: .isDemo)
     }
 }
 

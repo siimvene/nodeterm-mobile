@@ -162,6 +162,15 @@ public struct HomeView: View {
             }
             if env.profiles.isEmpty {
                 EmptyHint("Add a self-hosted nodeterm server to get started.")
+                // Zero-setup entry (docs/DEMO-MODE.md): a reviewer with no server taps this and
+                // drives the real UI offline. Enters the synthetic demo without leaving HOME.
+                Button { env.enterDemo() } label: {
+                    Label("Explore a demo", systemImage: "play.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent).tint(Theme.accent)
             } else {
                 VStack(spacing: 0) {
                     ForEach(env.profiles) { profile in
@@ -336,26 +345,49 @@ struct ServerRowView: View {
     let state: ConnectionState
 
     var body: some View {
-        NavigationLink {
-            ServerDetailView(profile: profile)
-        } label: {
+        // The demo row does not navigate to server-detail (there is no real server to manage): it
+        // carries a Demo chip and a one-tap Exit that returns HOME to the empty state.
+        if profile.isDemo {
             HStack(spacing: 12) {
-                Circle().fill(color).frame(width: 10, height: 10)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(profile.name).font(.body.weight(.medium)).foregroundStyle(Theme.textPrimary)
-                    Text(profile.baseURL.host() ?? profile.baseURL.absoluteString)
-                        .font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(1)
-                }
+                nameStack
                 Spacer()
-                Text(stateText).font(.caption).foregroundStyle(Theme.textSecondary)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.textTertiary)
+                Text("Demo").font(.caption2.weight(.bold))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Theme.accent.opacity(0.18)).foregroundStyle(Theme.accent)
+                    .clipShape(Capsule())
+                Button("Exit") { env.exitDemo() }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered).tint(Theme.textSecondary)
             }
             .padding(14).contentShape(Rectangle())
+        } else {
+            NavigationLink {
+                ServerDetailView(profile: profile)
+            } label: {
+                HStack(spacing: 12) {
+                    nameStack
+                    Spacer()
+                    Text(stateText).font(.caption).foregroundStyle(Theme.textSecondary)
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.textTertiary)
+                }
+                .padding(14).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(TapGesture().onEnded {
+                if state == .authRequired { env.reauthNeeded = profile }
+            })
         }
-        .buttonStyle(.plain)
-        .simultaneousGesture(TapGesture().onEnded {
-            if state == .authRequired { env.reauthNeeded = profile }
-        })
+    }
+
+    private var nameStack: some View {
+        HStack(spacing: 12) {
+            Circle().fill(color).frame(width: 10, height: 10)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(profile.name).font(.body.weight(.medium)).foregroundStyle(Theme.textPrimary)
+                Text(profile.baseURL.host() ?? profile.baseURL.absoluteString)
+                    .font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(1)
+            }
+        }
     }
 
     private var color: Color {
