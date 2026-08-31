@@ -40,10 +40,11 @@ public struct ServerProfile: Codable, Sendable, Equatable, Identifiable, Hashabl
         self.isDemo = isDemo
     }
 
-    // Custom Codable so a PRE-`isDemo` JSON payload still decodes (the field is read via
-    // `decodeIfPresent`, defaulting to false). The other flags are likewise read leniently so a
-    // truncated legacy record maps onto the same defaults the memberwise `init` uses; `id`, `name`
-    // and `baseURL` remain required. Encoding writes every field, so a fresh round-trip is exact.
+    // Custom Codable that adds ONLY `isDemo` back-compatibly: a PRE-`isDemo` JSON payload still
+    // decodes because that one field is read via `decodeIfPresent` (defaulting to false). Every
+    // other field keeps the synthesized decoder's REQUIRED semantics — a record missing `id`,
+    // `name`, `baseURL`, or any of the three flags still fails to decode and is sidelined by
+    // `ServerProfileStore`, exactly as before this change. Encoding writes every field.
     private enum CodingKeys: String, CodingKey {
         case id, name, baseURL, autoConnect, rememberPassword, insecureHTTP, isDemo
     }
@@ -53,9 +54,10 @@ public struct ServerProfile: Codable, Sendable, Equatable, Identifiable, Hashabl
         id = try c.decode(String.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
         baseURL = try c.decode(URL.self, forKey: .baseURL)
-        autoConnect = try c.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? true
-        rememberPassword = try c.decodeIfPresent(Bool.self, forKey: .rememberPassword) ?? false
-        insecureHTTP = try c.decodeIfPresent(Bool.self, forKey: .insecureHTTP) ?? false
+        autoConnect = try c.decode(Bool.self, forKey: .autoConnect)
+        rememberPassword = try c.decode(Bool.self, forKey: .rememberPassword)
+        insecureHTTP = try c.decode(Bool.self, forKey: .insecureHTTP)
+        // The one genuinely new field: absent in pre-rebrand records ⇒ false, not a decode failure.
         isDemo = try c.decodeIfPresent(Bool.self, forKey: .isDemo) ?? false
     }
 

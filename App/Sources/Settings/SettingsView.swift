@@ -70,7 +70,7 @@ public struct SettingsView: View {
             Toggle("Session finished", isOn: $settings.notifyOnCompletion)
             Toggle("Needs your response", isOn: $settings.notifyOnNeedsYou)
             // §9.6: the self-hosted server has NO push relay — be explicit, no fake background toggles.
-            Text("Notifications work while nodeterm is open; iOS may occasionally check in the background. There is no push server, so alerts can't arrive when the app is fully closed.")
+            Text("Notifications work while Termscape is open; iOS may occasionally check in the background. There is no push server, so alerts can't arrive when the app is fully closed.")
                 .font(.caption).foregroundStyle(Theme.textSecondary)
         }
     }

@@ -29,7 +29,9 @@ public actor DemoFrameTransport: FrameTransporting {
     private let script: [DemoPush]
 
     private var queue: [WSMessage] = []
-    private var waiter: CheckedContinuation<WSMessage, Error>?
+    // FIFO waiters. Real RpcClient consumes receive() serially, but a queue (not a single slot)
+    // keeps a second concurrent receive() from overwriting and permanently stranding the first.
+    private var waiters: [CheckedContinuation<WSMessage, Error>] = []
     private var closed = false
     private var scriptStarted = false
 
@@ -74,27 +76,25 @@ public actor DemoFrameTransport: FrameTransporting {
         // Script exhausted and nothing queued: suspend until a later push or close(). NEVER throw
         // here — that would drive RpcClient's reconnect loop (docs/DEMO-MODE.md).
         return try await withCheckedThrowingContinuation { cont in
-            self.waiter = cont
+            self.waiters.append(cont)
         }
     }
 
     public func close() async {
         closed = true
-        if let w = waiter {
-            waiter = nil
-            // Ending the suspension on close is correct — the client is tearing down (stop()), not
-            // reconnecting, so this throw does not spin the loop.
-            w.resume(throwing: RpcTransportError.closed)
-        }
+        // Ending every suspension on close is correct — the client is tearing down (stop()), not
+        // reconnecting, so these throws do not spin the loop.
+        let pending = waiters
+        waiters = []
+        for w in pending { w.resume(throwing: RpcTransportError.closed) }
     }
 
     // MARK: - Internal
 
     /// Deliver a frame to a waiting `receive()` or buffer it in order.
     private func enqueue(_ message: WSMessage) {
-        if let w = waiter {
-            waiter = nil
-            w.resume(returning: message)
+        if !waiters.isEmpty {
+            waiters.removeFirst().resume(returning: message)
         } else {
             queue.append(message)
         }
