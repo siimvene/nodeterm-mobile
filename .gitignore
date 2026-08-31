@@ -3,3 +3,6 @@
 xcuserdata/
 .DS_Store
 .swiftpm/
+
+# local Xcode archives/builds
+build/

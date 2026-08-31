@@ -38,7 +38,7 @@ targets:
         # Compile the REAL NodetermKit wiring in Factory.swift (stubs without it).
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) NODETERM_KIT_IMPL_READY"
         MARKETING_VERSION: "0.0.1"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
