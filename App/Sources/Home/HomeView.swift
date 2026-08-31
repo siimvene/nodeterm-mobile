@@ -26,6 +26,7 @@ public struct HomeView: View {
                     statTiles
                     sessionsSection
                     serversSection
+                    usageSection
                 }
                 .padding(16)
             }
@@ -170,6 +171,45 @@ public struct HomeView: View {
                     }
                 }
                 .card()
+            }
+        }
+    }
+
+    // MARK: Usage (SPEC §9.1 / §5.6)
+
+    /// Account rate-limit stats forwarded from each connected host over `usage:update`. Read-only
+    /// (the phone renders the host usage service's own snapshots). Sits below the Servers block —
+    /// moved here from Settings so the dashboard surfaces it directly. Hidden entirely when no
+    /// connected server is publishing usage, so it never shows an empty shell.
+    @ViewBuilder private var usageSection: some View {
+        let servers = env.runtimes.filter { $0.connectionState == .connected && !$0.accountUsage.isEmpty }
+        if !servers.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Usage")
+                ForEach(servers, id: \.profile.id) { server in
+                    VStack(alignment: .leading, spacing: 0) {
+                        // Name the host only when more than one is reporting — a single-server
+                        // setup (the common case) needs no redundant label.
+                        if servers.count > 1 {
+                            HStack(spacing: 8) {
+                                Circle().fill(Theme.accent).frame(width: 8, height: 8)
+                                Text(server.profile.name)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Theme.textSecondary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 2)
+                        }
+                        ForEach(Array(server.accountUsage.enumerated()), id: \.element.id) { idx, account in
+                            AccountUsageRow(account: account)
+                                .padding(.horizontal, 14).padding(.vertical, 10)
+                            if idx < server.accountUsage.count - 1 {
+                                Divider().background(Theme.separator)
+                            }
+                        }
+                    }
+                    .card()
+                }
             }
         }
     }
