@@ -1,0 +1,116 @@
+name: iOS Release (App Store Connect)
+
+# Manual trigger only — each run consumes paid private-repo macOS minutes and
+# uploads a build to App Store Connect, so it must never fire on a push.
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Optional note for this run"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "ios-release-*"
+
+permissions:
+  contents: read
+
+jobs:
+  archive-and-upload:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      # Team ID is an identifier, not a secret (it ships in every build).
+      TEAM_ID: D7HDY2ST3C
+      KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select a released Xcode 26 (build machine must NOT be beta)
+        run: |
+          set -euo pipefail
+          echo "Available Xcodes:"; ls -d /Applications/Xcode*.app || true
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$XC" ]; then
+            echo "::error::No Xcode 26.x on this runner. Bump runs-on to a newer macOS image."
+            exit 1
+          fi
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+          echo "SDKs:"; xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: Generate the Xcode project (XcodeGen; .xcodeproj is gitignored)
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen generate
+          ls -d Termscape.xcodeproj
+
+      - name: Ensure Metal toolchain (archive fails without it on Xcode 26)
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1; then
+            echo "Metal toolchain already present ($(xcrun -f metal))"
+          else
+            echo "Metal toolchain missing; downloading..."
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: Write App Store Connect API key from secret
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.private_keys
+          echo "${{ secrets.ASC_KEY_P8_B64 }}" | base64 --decode > "$HOME/.private_keys/AuthKey_${KEY_ID}.p8"
+          chmod 600 "$HOME/.private_keys/AuthKey_${KEY_ID}.p8"
+
+      - name: Archive (cloud-signed via ASC API key)
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project Termscape.xcodeproj \
+            -scheme Termscape \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Termscape.xcarchive \
+            -allowProvisioningUpdates \
+            DEVELOPMENT_TEAM="${TEAM_ID}" \
+            -authenticationKeyPath "$HOME/.private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyID "${KEY_ID}" \
+            -authenticationKeyIssuerID "${ISSUER_ID}"
+
+      - name: Export IPA (method app-store-connect)
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath build/Termscape.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist ci_scripts/ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/.private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyID "${KEY_ID}" \
+            -authenticationKeyIssuerID "${ISSUER_ID}"
+          ls -la build/export
+
+      - name: Upload to App Store Connect
+        run: |
+          set -euo pipefail
+          xcrun altool --upload-app --type ios \
+            --file "build/export/Termscape.ipa" \
+            --apiKey "${KEY_ID}" \
+            --apiIssuer "${ISSUER_ID}"
+
+      - name: Save archive + ipa as run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: termscape-ios
+          path: |
+            build/export/*.ipa
+            build/Termscape.xcarchive
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Cleanup key
+        if: always()
+        run: rm -f "$HOME/.private_keys/AuthKey_${KEY_ID}.p8"
