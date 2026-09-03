@@ -57,6 +57,7 @@ private final class SampleBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var samples: [Int16] = []
     func append(_ s: [Int16]) { lock.lock(); samples.append(contentsOf: s); lock.unlock() }
+    func clear() { lock.lock(); samples.removeAll(); lock.unlock() }
     func snapshot() -> [Int16] { lock.lock(); defer { lock.unlock() }; return samples }
     var count: Int { lock.lock(); defer { lock.unlock() }; return samples.count }
 }
@@ -105,34 +106,67 @@ public final class DictationRecorder: ObservableObject {
 
     public func start() throws {
         guard !isRecording else { return }
+        // `stop()` only SNAPSHOTS, so without this a second recording on the same recorder appends
+        // to the first one's audio — and `PcmAudio.capped` keeps the EARLIEST 120 s, so what gets
+        // transcribed (and, on the server engine, uploaded) is the recording the user cancelled.
+        buffer.clear()
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+        // NO `.duckOthers`: ducking is only legal on a playback-capable category (playAndRecord,
+        // playback, multiRoute). Asking for it on `.record` makes setCategory itself throw -50 —
+        // which the caller's old `try?` swallowed, leaving a live sheet with a dead microphone.
+        try session.setCategory(.record, mode: .measurement)
         try session.setActive(true)
 
-        let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
-        guard let box = ConverterBox(from: inputFormat) else { throw DictationError.unavailable }
+        do {
+            let input = engine.inputNode
+            // A tap left behind by a start() that failed AFTER installTap is invisible to
+            // `isRecording`, and installing a SECOND tap on the same bus is an ObjC exception —
+            // `try?` cannot catch one and the process dies on the spot. Removing first is
+            // idempotent and safe with no tap installed.
+            input.removeTap(onBus: 0)
 
-        let buffer = self.buffer
-        input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { pcmBuffer, _ in
-            let ratio = box.target.sampleRate / pcmBuffer.format.sampleRate
-            let capacity = AVAudioFrameCount(Double(pcmBuffer.frameLength) * ratio + 1024)
-            guard let out = AVAudioPCMBuffer(pcmFormat: box.target, frameCapacity: capacity) else { return }
-            var fed = false
-            var error: NSError?
-            box.converter.convert(to: out, error: &error) { _, status in
-                if fed { status.pointee = .noDataNow; return nil }
-                fed = true; status.pointee = .haveData; return pcmBuffer
+            // installTap raises the same uncatchable way on a zero-rate / zero-channel format, so
+            // validation is the only protection there is. Check BOTH sides of the node: the
+            // hardware side (`inputFormat`) is zeroed while the input is unavailable — another app
+            // holding the mic, a Bluetooth route mid-switch, permission granted before the route
+            // has attached — and the tap runs on the `outputFormat`. This NARROWS the crash window;
+            // it cannot close it, because a route change between this check and installTap is still
+            // possible and Swift has no way to catch what AVAudioEngine raises.
+            let hardware = input.inputFormat(forBus: 0)
+            let inputFormat = input.outputFormat(forBus: 0)
+            guard hardware.sampleRate > 0, hardware.channelCount > 0,
+                  inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+                  let box = ConverterBox(from: inputFormat) else { throw DictationError.unavailable }
+
+            let buffer = self.buffer
+            input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { pcmBuffer, _ in
+                let ratio = box.target.sampleRate / pcmBuffer.format.sampleRate
+                let capacity = AVAudioFrameCount(Double(pcmBuffer.frameLength) * ratio + 1024)
+                guard let out = AVAudioPCMBuffer(pcmFormat: box.target, frameCapacity: capacity) else { return }
+                var fed = false
+                var error: NSError?
+                box.converter.convert(to: out, error: &error) { _, status in
+                    if fed { status.pointee = .noDataNow; return nil }
+                    fed = true; status.pointee = .haveData; return pcmBuffer
+                }
+                if error != nil { return }
+                let n = Int(out.frameLength)
+                if n > 0, let ch = out.int16ChannelData?[0] {
+                    buffer.append(Array(UnsafeBufferPointer(start: ch, count: n)))
+                }
             }
-            if error != nil { return }
-            let n = Int(out.frameLength)
-            if n > 0, let ch = out.int16ChannelData?[0] {
-                buffer.append(Array(UnsafeBufferPointer(start: ch, count: n)))
-            }
+
+            engine.prepare()
+            try engine.start()
+        } catch {
+            // ONE cleanup path for every failure after the session went active: an installed tap
+            // would outlive this start and turn the NEXT one into the double-install crash above,
+            // and a session left active on `.record` keeps the mic route held for the whole app.
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            throw error
         }
-
-        engine.prepare()
-        try engine.start()
         isRecording = true
         seconds = 0
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -208,8 +242,20 @@ public struct DictationSheet: View {
             }
             .task {
                 let ok = await recorder.requestPermission()
+                // The permission continuations are not cancellation-aware, so this can resume long
+                // after the sheet was swiped away — and `.onDisappear` has already run its
+                // `isRecording` cleanup by then. Starting here would leave the microphone hot with
+                // no UI attached to stop it.
+                guard !Task.isCancelled else { return }
                 permissionDenied = !ok
-                if ok { try? recorder.start() }
+                guard ok else { return }
+                do {
+                    try recorder.start()
+                } catch {
+                    // `try?` here used to swallow this, leaving a live sheet with a dead mic and no
+                    // countdown and nothing said about why.
+                    errorText = "Couldn't start the microphone. Close anything else using it and reopen."
+                }
             }
             .onDisappear {
                 // Interactive swipe-dismiss never hits the Cancel button — the mic must not stay
