@@ -95,10 +95,46 @@ jobs:
       - name: Upload to App Store Connect
         run: |
           set -euo pipefail
+          # altool EXITS 0 ON A REJECTED DELIVERY. On 2026-09-03 it printed "UPLOAD FAILED with 2
+          # errors" (the 0.0.1 pre-release train was closed, and CFBundleShortVersionString was not
+          # higher than the already-approved version) and this step still went green — so builds 4
+          # and 5 were reported as shipped when App Store Connect never received either one. Its
+          # exit code is not evidence; its output is.
+          #
+          # Both directions are asserted, and both strings are taken from real runs: the successful
+          # upload of build 3 printed "UPLOAD SUCCEEDED with no errors" plus a Delivery UUID, and
+          # the failed upload of build 5 printed "UPLOAD FAILED with 2 errors".
+          set +e
           xcrun altool --upload-app --type ios \
             --file "build/export/Termscape.ipa" \
             --apiKey "${KEY_ID}" \
-            --apiIssuer "${ISSUER_ID}"
+            --apiIssuer "${ISSUER_ID}" 2>&1 | tee upload.log
+          # BOTH halves of the pipe: a tee that cannot write would otherwise lose the log this
+          # whole check reads, and a silently truncated log is exactly the failure mode being
+          # fixed here (consort finding).
+          rc=${PIPESTATUS[0]}
+          teerc=${PIPESTATUS[1]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::altool exited ${rc}"
+            exit 1
+          fi
+          if [ "$teerc" -ne 0 ]; then
+            echo "::error::tee exited ${teerc}; upload.log cannot be trusted"
+            exit 1
+          fi
+          if grep -qiE "UPLOAD FAILED|Failed to upload package|ERROR: \[altool" upload.log; then
+            echo "::error::altool reported a failed delivery while exiting 0 — see the log above"
+            exit 1
+          fi
+          # Both halves of a real success. "UPLOAD SUCCEEDED" alone is an unanchored substring and
+          # could in principle appear in mixed or future output; a delivery that actually reached
+          # Apple also prints a Delivery UUID (verified in the build 3 run). Requiring both closes
+          # the theoretical false-pass (consort finding).
+          if ! grep -qi "UPLOAD SUCCEEDED" upload.log || ! grep -qi "Delivery UUID:" upload.log; then
+            echo "::error::altool did not print both UPLOAD SUCCEEDED and a Delivery UUID; refusing to call this a shipped build"
+            exit 1
+          fi
 
       - name: Save archive + ipa as run artifacts
         if: always()

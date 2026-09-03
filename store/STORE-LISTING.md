@@ -81,7 +81,12 @@ Dictation uses on-device speech (or the user's own server) and requires micropho
 ## Export compliance
 - Already declared in the binary: `ITSAppUsesNonExemptEncryption = NO` (standard SSH/TLS only, exempt). No compliance questionnaire needed per build.
 
-## What's New (version 0.0.1)
+## What's New (version 1.0.0)
+```
+Fixes two bugs worth the update. Typing in a terminal could paint every character twice, and tapping the microphone could close the app immediately. Both are fixed.
+```
+
+## What's New (version 0.0.1 — shipped)
 ```
 First release of Termscape — a native client for your self-hosted nodeterm Server Edition. Live tmux terminals, agent status, transcript view, multi-server, dictation, and an offline demo you can try with no setup.
 ```
