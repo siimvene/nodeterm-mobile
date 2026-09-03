@@ -94,11 +94,25 @@ public final class DictationRecorder: ObservableObject {
     /// The maximum recording length (SPEC §5.5) — surfaced for the countdown UI.
     public var maxSeconds: Double { Double(PcmAudio.maxSeconds) }
 
-    public func requestPermission() async -> Bool {
-        let speech = await withCheckedContinuation { cont in
+    /// NONISOLATED ON PURPOSE — this is a crash fix, not a style choice.
+    ///
+    /// `DictationRecorder` is `@MainActor`, so under Swift 6 (`SWIFT_STRICT_CONCURRENCY: complete`)
+    /// a non-`Sendable` escaping closure written in one of its methods is INFERRED to be
+    /// MainActor-isolated. Both permission APIs below are ObjC completion handlers that TCC invokes
+    /// on `com.apple.root.default-qos`, so the isolation check the compiler emits in the block thunk
+    /// fails there and `dispatch_assert_queue_fail` traps the process: EXC_BREAKPOINT / SIGTRAP,
+    /// instantly, the moment the mic button is tapped. Observed on device (iPhone 17 Pro Max,
+    /// crash report Termscape-2026-09-04-004729: `closure #1 in closure #1 in
+    /// DictationRecorder.requestPermission()` under `__TCCAccessRequest_block_invoke_8`).
+    ///
+    /// `nonisolated` removes the inference, so the handlers run wherever TCC calls them. Nothing
+    /// here touches actor state — the only captured value is the continuation, which is thread-safe
+    /// by construction — and the caller resumes back on its own actor after the `await`.
+    public nonisolated func requestPermission() async -> Bool {
+        let speech = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             SFSpeechRecognizer.requestAuthorization { cont.resume(returning: $0 == .authorized) }
         }
-        let mic = await withCheckedContinuation { cont in
+        let mic = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             AVAudioApplication.requestRecordPermission { cont.resume(returning: $0) }
         }
         return speech && mic
@@ -139,7 +153,11 @@ public final class DictationRecorder: ObservableObject {
                   let box = ConverterBox(from: inputFormat) else { throw DictationError.unavailable }
 
             let buffer = self.buffer
-            input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { pcmBuffer, _ in
+            // `@Sendable` for the SAME reason `requestPermission` is `nonisolated`: without it this
+            // escaping closure, written inside a `@MainActor` method, is inferred MainActor-isolated
+            // and the audio render thread that calls it trips the isolation check and traps. It
+            // captures only the two `@unchecked Sendable` boxes, which is what makes this legal.
+            input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { @Sendable pcmBuffer, _ in
                 let ratio = box.target.sampleRate / pcmBuffer.format.sampleRate
                 let capacity = AVAudioFrameCount(Double(pcmBuffer.frameLength) * ratio + 1024)
                 guard let out = AVAudioPCMBuffer(pcmFormat: box.target, frameCapacity: capacity) else { return }
@@ -189,6 +207,10 @@ public final class DictationRecorder: ObservableObject {
         isRecording = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         let capped = PcmAudio.capped(buffer.snapshot())   // enforce cap even if the timer missed
+        // Neither `removeTap` nor `engine.stop()` waits for a tap callback already executing, so a
+        // sub-millisecond tail can land after the snapshot. Drop it here rather than leaving a
+        // cancelled recording's audio resident until the next `start()` clears it.
+        buffer.clear()
         return PcmAudio.encodeInt16LE(capped)
     }
 }
