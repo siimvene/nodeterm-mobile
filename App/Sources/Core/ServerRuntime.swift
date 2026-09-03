@@ -25,7 +25,7 @@ public final class ServerRuntime: ObservableObject, Identifiable {
     @Published public private(set) var workspace: Workspace?
     /// nodeId → reduced status, republished after every reducer fold (SPEC §6.3).
     @Published public private(set) var statuses: [String: AgentNodeStatus] = [:]
-    /// Account rate-limit usage, forwarded from the desktop over `usage:update` (Settings → Usage).
+    /// Account rate-limit usage, forwarded from the desktop over `usage:update` (shown on the Home dashboard).
     @Published public private(set) var accountUsage: [AccountUsage] = []
 
     /// The session currently shown full-screen — its `onScreen` flag governs unread-setting (§6.3 #8).

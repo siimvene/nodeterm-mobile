@@ -16,7 +16,6 @@ public struct SettingsView: View {
             Form {
                 terminalSection
                 inputSection
-                usageSection
                 notificationsSection
                 integrationsSection
                 aboutSection
@@ -64,14 +63,6 @@ public struct SettingsView: View {
         }
     }
 
-    // MARK: Usage — account rate-limit stats forwarded from the desktop (usage:update).
-
-    private var usageSection: some View {
-        Section("Usage") {
-            NavigationLink("Account usage") { UsageView() }
-        }
-    }
-
     // MARK: Notifications — honest scope (SPEC §9.6)
 
     private var notificationsSection: some View {
@@ -79,7 +70,7 @@ public struct SettingsView: View {
             Toggle("Session finished", isOn: $settings.notifyOnCompletion)
             Toggle("Needs your response", isOn: $settings.notifyOnNeedsYou)
             // §9.6: the self-hosted server has NO push relay — be explicit, no fake background toggles.
-            Text("Notifications work while nodeterm is open; iOS may occasionally check in the background. There is no push server, so alerts can't arrive when the app is fully closed.")
+            Text("Notifications work while Termscape is open; iOS may occasionally check in the background. There is no push server, so alerts can't arrive when the app is fully closed.")
                 .font(.caption).foregroundStyle(Theme.textSecondary)
         }
     }
@@ -98,7 +89,7 @@ public struct SettingsView: View {
                 Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
                     .foregroundStyle(Theme.textSecondary) }
             NavigationLink("Open source licenses") { LicensesView() }
-            Link("nodeterm", destination: URL(string: "https://nodeterm.dev")!)
+            Link("Built on nodeterm", destination: URL(string: "https://nodeterm.dev")!)
         }
     }
 }

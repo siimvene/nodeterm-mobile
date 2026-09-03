@@ -26,6 +26,7 @@ public struct HomeView: View {
                     statTiles
                     sessionsSection
                     serversSection
+                    usageSection
                 }
                 .padding(16)
             }
@@ -62,7 +63,7 @@ public struct HomeView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Image("LogoMark").resizable().scaledToFit().frame(width: 22, height: 22)
-                Text("Remote Claude").font(.headline.bold()).foregroundStyle(Theme.textSecondary)
+                Text("Termscape").font(.headline.bold()).foregroundStyle(Theme.textSecondary)
             }
             .padding(.bottom, 6)
             Text("Welcome back").font(.largeTitle.bold()).foregroundStyle(Theme.textPrimary)
@@ -161,6 +162,15 @@ public struct HomeView: View {
             }
             if env.profiles.isEmpty {
                 EmptyHint("Add a self-hosted nodeterm server to get started.")
+                // Zero-setup entry (docs/DEMO-MODE.md): a reviewer with no server taps this and
+                // drives the real UI offline. Enters the synthetic demo without leaving HOME.
+                Button { env.enterDemo() } label: {
+                    Label("Explore a demo", systemImage: "play.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent).tint(Theme.accent)
             } else {
                 VStack(spacing: 0) {
                     ForEach(env.profiles) { profile in
@@ -170,6 +180,48 @@ public struct HomeView: View {
                     }
                 }
                 .card()
+            }
+        }
+    }
+
+    // MARK: Usage (SPEC §9.1 / §5.6)
+
+    /// Account rate-limit stats forwarded from each connected host over `usage:update`. Read-only
+    /// (the phone renders the host usage service's own snapshots). Sits below the Servers block —
+    /// moved here from Settings so the dashboard surfaces it directly. Hidden entirely when no
+    /// connected server is publishing usage, so it never shows an empty shell.
+    @ViewBuilder private var usageSection: some View {
+        let connectedCount = env.runtimes.filter { $0.connectionState == .connected }.count
+        let servers = env.runtimes.filter { $0.connectionState == .connected && !$0.accountUsage.isEmpty }
+        if !servers.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader("Usage")
+                ForEach(servers, id: \.profile.id) { server in
+                    VStack(alignment: .leading, spacing: 0) {
+                        // Name the host whenever more than one is CONNECTED — attribution must not
+                        // depend on how many happen to be reporting usage (a single reporting card
+                        // among several connected hosts would otherwise be unlabeled, and read as
+                        // belonging to whichever host the user has in mind).
+                        if connectedCount > 1 {
+                            HStack(spacing: 8) {
+                                Circle().fill(Theme.accent).frame(width: 8, height: 8)
+                                Text(server.profile.name)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Theme.textSecondary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 2)
+                        }
+                        ForEach(Array(server.accountUsage.enumerated()), id: \.element.id) { idx, account in
+                            AccountUsageRow(account: account)
+                                .padding(.horizontal, 14).padding(.vertical, 10)
+                            if idx < server.accountUsage.count - 1 {
+                                Divider().background(Theme.separator)
+                            }
+                        }
+                    }
+                    .card()
+                }
             }
         }
     }
@@ -293,26 +345,49 @@ struct ServerRowView: View {
     let state: ConnectionState
 
     var body: some View {
-        NavigationLink {
-            ServerDetailView(profile: profile)
-        } label: {
+        // The demo row does not navigate to server-detail (there is no real server to manage): it
+        // carries a Demo chip and a one-tap Exit that returns HOME to the empty state.
+        if profile.isDemo {
             HStack(spacing: 12) {
-                Circle().fill(color).frame(width: 10, height: 10)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(profile.name).font(.body.weight(.medium)).foregroundStyle(Theme.textPrimary)
-                    Text(profile.baseURL.host() ?? profile.baseURL.absoluteString)
-                        .font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(1)
-                }
+                nameStack
                 Spacer()
-                Text(stateText).font(.caption).foregroundStyle(Theme.textSecondary)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.textTertiary)
+                Text("Demo").font(.caption2.weight(.bold))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Theme.accent.opacity(0.18)).foregroundStyle(Theme.accent)
+                    .clipShape(Capsule())
+                Button("Exit") { env.exitDemo() }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered).tint(Theme.textSecondary)
             }
             .padding(14).contentShape(Rectangle())
+        } else {
+            NavigationLink {
+                ServerDetailView(profile: profile)
+            } label: {
+                HStack(spacing: 12) {
+                    nameStack
+                    Spacer()
+                    Text(stateText).font(.caption).foregroundStyle(Theme.textSecondary)
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.textTertiary)
+                }
+                .padding(14).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(TapGesture().onEnded {
+                if state == .authRequired { env.reauthNeeded = profile }
+            })
         }
-        .buttonStyle(.plain)
-        .simultaneousGesture(TapGesture().onEnded {
-            if state == .authRequired { env.reauthNeeded = profile }
-        })
+    }
+
+    private var nameStack: some View {
+        HStack(spacing: 12) {
+            Circle().fill(color).frame(width: 10, height: 10)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(profile.name).font(.body.weight(.medium)).foregroundStyle(Theme.textPrimary)
+                Text(profile.baseURL.host() ?? profile.baseURL.absoluteString)
+                    .font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(1)
+            }
+        }
     }
 
     private var color: Color {

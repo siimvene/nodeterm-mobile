@@ -1,7 +1,7 @@
 import Foundation
 
 /// Account rate-limit usage forwarded from the desktop's status mirror over the `usage:update`
-/// WS event (server: peer-status-bridge). The phone renders these in Settings → Usage; it never
+/// WS event (server: peer-status-bridge). The phone renders these on the Home dashboard's Usage section; it never
 /// computes them — the numbers are the desktop usage service's own snapshots.
 ///
 /// Tolerant decoding throughout (unknown fields ignored, absent optionals nil): the mirror is

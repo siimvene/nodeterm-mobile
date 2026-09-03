@@ -57,6 +57,17 @@ public struct AddServerView: View {
                         Text(errorText).font(.subheadline).foregroundStyle(Theme.needsYou)
                     }
                 }
+
+                // Zero-setup path (docs/DEMO-MODE.md): no account, no server needed — drives the
+                // real UI offline. Enters the synthetic demo and closes this sheet.
+                Section {
+                    Button { env.enterDemo(); dismiss() } label: {
+                        Label("Explore a demo instead", systemImage: "play.circle.fill")
+                    }
+                    .tint(Theme.accent)
+                    Text("No account needed — see Termscape driving a live-looking workspace, fully offline.")
+                        .font(.caption2).foregroundStyle(Theme.textTertiary)
+                }
             }
             .scrollContentBackground(.hidden)
             .background(Theme.background.ignoresSafeArea())

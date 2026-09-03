@@ -1,7 +1,7 @@
-# Remote Claude
+# Termscape
 
-A native iOS client for a self-hosted **nodeterm Server Edition** — attach to your
-terminal sessions and Claude Code (or Codex / Gemini / …) agents from your phone,
+**Termscape** is a native iOS client for a self-hosted **nodeterm Server Edition** — attach
+to your terminal sessions and Claude Code (or Codex / Gemini / …) agents from your phone,
 over your own network. No relay, no cloud middleman: the app talks straight to a
 server you run, at an address you configure (a Tailscale MagicDNS name works well).
 
@@ -23,8 +23,8 @@ with a dependency-free protocol core (`NodetermKit`) that is unit-tested on macO
 - **Real terminals** — each session is a live co-attached tmux view via SwiftTerm.
   Touch-scroll through history, drag to select, an accessory toolbar for the keys a
   soft keyboard lacks (Esc, arrows, Paste, Mic, ⇧⏎), and a one-tap keyboard dismiss.
-- **Account usage** — Settings → Usage shows every managed account's rate-limit
-  windows (session / weekly / per-model), forwarded live from the server.
+- **Account usage** — the Home dashboard (below the Servers block) shows every managed
+  account's rate-limit windows (session / weekly / per-model), forwarded live from the server.
 - **Local notifications** — a banner + app-icon badge when an agent finishes or
   needs your response, while the app is alive. (No push server, so nothing arrives
   when the app is fully closed — that would need APNs.)
@@ -57,8 +57,8 @@ dependency-free), and secrets never in logs.
 ```sh
 swift test                    # runs the NodetermKit suite (macOS)
 brew install xcodegen         # once
-xcodegen generate             # produces NodetermMobile.xcodeproj (gitignored)
-open NodetermMobile.xcodeproj # build/run the iOS app in Xcode
+xcodegen generate             # produces Termscape.xcodeproj (gitignored)
+open Termscape.xcodeproj      # build/run the iOS app in Xcode
 ```
 
 Device builds use automatic signing with your own team; open the generated project
