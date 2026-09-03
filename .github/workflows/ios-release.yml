@@ -112,9 +112,16 @@ jobs:
           # BOTH halves of the pipe: a tee that cannot write would otherwise lose the log this
           # whole check reads, and a silently truncated log is exactly the failure mode being
           # fixed here (consort finding).
-          rc=${PIPESTATUS[0]}
-          teerc=${PIPESTATUS[1]}
+          #
+          # Copy the WHOLE array in one assignment. PIPESTATUS is rebuilt by the next command, so
+          # `rc=${PIPESTATUS[0]}` already destroys it and the following `${PIPESTATUS[1]}` reads an
+          # unbound element — which under `set -u` aborts the step. That failed the 1.0.0 build 6
+          # run AFTER altool had uploaded successfully: a green delivery reported as a failure, the
+          # mirror image of the bug this step exists to catch.
+          pipe=("${PIPESTATUS[@]}")
           set -e
+          rc=${pipe[0]:-1}
+          teerc=${pipe[1]:-1}
           if [ "$rc" -ne 0 ]; then
             echo "::error::altool exited ${rc}"
             exit 1
