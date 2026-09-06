@@ -118,6 +118,7 @@ public struct NewSessionSheet: View {
             Form {
                 agentSection
                 if agentChoice.usesAccounts && !accountsForAgent.isEmpty { accountSection }
+                if agentChoice.agentId != nil { permissionSection }
                 titleSection
                 if !canStart { unavailableSection }
             }
@@ -160,6 +161,52 @@ public struct NewSessionSheet: View {
                     Text(account.displayName).tag(String?.some(account.id))
                 }
             }
+        }
+    }
+
+    /// Read-only, mode-taking agents only (claude/codex/gemini): show the RESOLVED permission mode
+    /// and where it came from, so an inherited approvals-bypass from a git-shared `project.json`
+    /// (or the server setting) is visible before Start, not silent (SPEC §7.11.3). Not editable —
+    /// the desktop inherits the project default the same way; the phone only surfaces it.
+    private var permissionSection: some View {
+        let resolved = NewSessionPlan.resolvePermissionModeWithSource(
+            projectMode: project.defaultPermissionMode, settingsMode: settingsMode)
+        let bypass = NewSessionPlan.isBypassMode(resolved.mode)
+        return Section("Permission mode") {
+            HStack {
+                Text(Self.modeLabel(resolved.mode))
+                    .foregroundStyle(bypass ? Theme.needsYou : Theme.textPrimary)
+                Spacer()
+                Text(Self.sourceLabel(resolved.source))
+                    .font(.caption).foregroundStyle(Theme.textTertiary)
+            }
+            if bypass {
+                Label(agentChoice == .codex
+                      ? "Runs without approval prompts and sandbox"
+                      : "Runs without approval prompts",
+                      systemImage: "exclamationmark.shield")
+                    .font(.caption).foregroundStyle(Theme.needsYou)
+            }
+        }
+    }
+
+    /// A resolved permission mode → its display name (the mode strings come from `NewSessionPlan`).
+    private static func modeLabel(_ mode: String) -> String {
+        switch mode {
+        case "manual": return "Manual"
+        case "auto": return "Auto"
+        case "acceptEdits": return "Accept edits"
+        case "plan": return "Plan"
+        case "bypassPermissions": return "Bypass approvals"
+        default: return mode
+        }
+    }
+
+    private static func sourceLabel(_ source: NewSessionPlan.PermissionModeSource) -> String {
+        switch source {
+        case .projectDefault: return "project default"
+        case .serverSetting: return "server setting"
+        case .fallbackDefault: return "default"
         }
     }
 

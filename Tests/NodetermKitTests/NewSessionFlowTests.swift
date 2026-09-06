@@ -77,6 +77,27 @@ public func runPermissionModeResolutionTests() {
     check(NewSessionPlan.launchCommand(agentId: "claude", permissionMode: mode,
                                        caps: ClaudeCliCaps(autoPermissionMode: true)) == "claude --permission-mode auto",
           "resolved auto + caps on ⇒ flag")
+
+    // The sheet needs the SOURCE too (LOW security finding): show where a bypass was inherited from.
+    func withSource(_ project: String?, _ settings: String?)
+        -> (mode: String, source: NewSessionPlan.PermissionModeSource) {
+        NewSessionPlan.resolvePermissionModeWithSource(projectMode: project, settingsMode: settings)
+    }
+    check(withSource("bypassPermissions", "manual") == ("bypassPermissions", .projectDefault),
+          "valid project mode ⇒ source is the project default")
+    check(withSource(nil, "plan") == ("plan", .serverSetting), "absent project ⇒ source is the server setting")
+    check(withSource("yolo", "acceptEdits") == ("acceptEdits", .serverSetting),
+          "unknown project value falls through ⇒ server setting")
+    check(withSource(nil, nil) == ("auto", .fallbackDefault), "nothing set ⇒ the fallback default")
+    check(withSource("garbage", "nonsense") == ("auto", .fallbackDefault), "both invalid ⇒ fallback default")
+    // …and it stays the single source of truth for the mode-only resolver.
+    check(withSource("plan", "manual").mode == resolve("plan", "manual"), "withSource.mode == resolvePermissionMode")
+
+    // isBypassMode flags ONLY bypassPermissions (the mode that drops approvals + codex sandbox).
+    check(NewSessionPlan.isBypassMode("bypassPermissions"), "bypassPermissions ⇒ bypass")
+    for safe in ["manual", "auto", "acceptEdits", "plan", "nonsense"] {
+        check(!NewSessionPlan.isBypassMode(safe), "\(safe) ⇒ not a bypass")
+    }
 }
 
 // MARK: - Settings: one malformed account row is skipped, the rest kept

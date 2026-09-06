@@ -46,16 +46,44 @@ public enum NewSessionPlan {
         return knownModes.contains(value)
     }
 
-    /// The mode a NEW session starts in — the desktop's `resolvePermissionMode`, layer for layer: a
-    /// VALID project override wins; else a VALID global setting; else the default (`auto`). Each
-    /// layer is validated on its own, so a stale/mistyped project value falls THROUGH to the setting
-    /// rather than to the bare command (both come from hand-editable, git-shared JSON). The
-    /// claude-only `auto` gate (`caps.autoPermissionMode`) applies AFTER this, in `launchCommand`.
-    public static func resolvePermissionMode(projectMode: String?, settingsMode: String?) -> String {
-        if let projectMode, isPermissionMode(projectMode) { return projectMode }
-        if let settingsMode, isPermissionMode(settingsMode) { return settingsMode }
-        return defaultPermissionMode
+    /// Which layer `resolvePermissionMode` took the mode FROM. Surfaced read-only in the new-session
+    /// sheet so a phone user can SEE that a git-shared `project.json` (or the server's own setting) is
+    /// about to launch an approvals-bypassed agent — the mode is inherited silently otherwise, exactly
+    /// as on the desktop, and a collaborator who commits `project.json` should not be able to flip it
+    /// for a phone user with no on-screen trace (SPEC §7.11.3).
+    public enum PermissionModeSource: Sendable, Equatable {
+        /// A VALID `Project.defaultPermissionMode` (git-shared `.nodeterm/project.json`).
+        case projectDefault
+        /// A VALID `settings.claudePermissionMode` (the server's global setting).
+        case serverSetting
+        /// Neither layer was valid ⇒ the built-in `DEFAULT_PERMISSION_MODE`.
+        case fallbackDefault
     }
+
+    /// The mode a NEW session starts in AND the layer it came from — the desktop's
+    /// `resolvePermissionMode`, layer for layer: a VALID project override wins; else a VALID global
+    /// setting; else the default (`auto`). Each layer is validated on its own, so a stale/mistyped
+    /// project value falls THROUGH to the setting rather than to the bare command (both come from
+    /// hand-editable, git-shared JSON). The claude-only `auto` gate (`caps.autoPermissionMode`)
+    /// applies AFTER this, in `launchCommand`.
+    public static func resolvePermissionModeWithSource(projectMode: String?, settingsMode: String?)
+        -> (mode: String, source: PermissionModeSource) {
+        if let projectMode, isPermissionMode(projectMode) { return (projectMode, .projectDefault) }
+        if let settingsMode, isPermissionMode(settingsMode) { return (settingsMode, .serverSetting) }
+        return (defaultPermissionMode, .fallbackDefault)
+    }
+
+    /// The resolved mode alone (source discarded) — the single source of truth is the `…WithSource`
+    /// function above, so the two can never drift.
+    public static func resolvePermissionMode(projectMode: String?, settingsMode: String?) -> String {
+        resolvePermissionModeWithSource(projectMode: projectMode, settingsMode: settingsMode).mode
+    }
+
+    /// Whether a resolved mode launches the agent with approvals — and, for codex, the sandbox —
+    /// bypassed: the one mode the sheet warns about. `bypassPermissions` maps to
+    /// `claude --permission-mode bypassPermissions`, `codex --dangerously-bypass-approvals-and-sandbox`,
+    /// and `gemini --approval-mode yolo`, so it is the bypass for every builtin the phone can spawn.
+    public static func isBypassMode(_ mode: String) -> Bool { mode == "bypassPermissions" }
 
     /// Assemble the launch line for a FRESH session, mirroring the desktop's `assembleLaunchCommand`
     /// + `approvalFlags` for the three builtins the phone can spawn. Returns `nil` for a plain
