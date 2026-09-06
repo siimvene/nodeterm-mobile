@@ -59,8 +59,11 @@ public struct AccountUsage: Codable, Sendable, Equatable, Identifiable {
         self.agentId = agentId; self.status = status; self.updatedAt = updatedAt; self.limits = limits
     }
 
-    /// Row id: the account id, or a stable token for the (single) system row.
-    public var id: String { accountId ?? "system:\(agentId)" }
+    /// Row id: `<agentId>:<accountId>` for a managed account, `system:<agentId>` for that agent's
+    /// system row. The agent is part of the key on purpose: Claude and Codex managed-account ids
+    /// come from independent id spaces (both randomUUID on the desktop), so `accountId` alone is
+    /// not a key — a collision would make one row overwrite the other in a keyed list.
+    public var id: String { accountId.map { "\(agentId):\($0)" } ?? "system:\(agentId)" }
 
     /// Best display name: label → email → a generic fallback.
     public var displayName: String {

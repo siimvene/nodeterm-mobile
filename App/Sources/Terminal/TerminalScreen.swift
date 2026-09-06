@@ -24,14 +24,19 @@ public struct TerminalScreen: View {
 
     private let row: SessionRow
 
-    public init(runtime: ServerRuntime, row: SessionRow) {
+    /// `pendingLaunch` is set ONLY when the phone SPAWNED this session (SPEC §7.11): the VM then
+    /// delivers the launch line after the shell settles and registers the node. nil for an ordinary
+    /// co-attach of an existing node.
+    public init(runtime: ServerRuntime, row: SessionRow, pendingLaunch: PendingLaunch? = nil) {
         self.runtime = runtime
         self.row = row
-        _vm = StateObject(wrappedValue: TerminalSessionVM(runtime: runtime, row: row))
+        _vm = StateObject(wrappedValue: TerminalSessionVM(runtime: runtime, row: row,
+                                                          pendingLaunch: pendingLaunch))
     }
 
     public var body: some View {
         VStack(spacing: 0) {
+            spawnBanner   // SPEC §7.11.4: the canvas-save outcome of a session this phone spawned
             terminalSurface
             AccessoryToolbar(vm: vm, settings: settings, onMic: { showDictation = true })
         }
@@ -134,6 +139,59 @@ public struct TerminalScreen: View {
                     .tint(Theme.textSecondary)
             }
         }
+    }
+
+    /// A non-blocking one-line banner for a session THIS phone spawned (SPEC §7.11). Four distinct
+    /// states, never conflated (`SpawnRecord.banner` decides): **unsaved** — the read-back found the
+    /// node genuinely absent on a readable project; **registrationUnknown** — the outcome could not
+    /// be established (the project was unreadable or missing, or the load itself failed), so it says
+    /// so and offers Retry; **launchUndelivered** — the node IS registered but its launch line never
+    /// landed, even after the runtime's delayed redelivery, so the user sees a bare shell where an
+    /// agent should be and Retry re-drives (gated: only a bare shell is typed into); **launchDropped**
+    /// — the launch was skipped because the pane was already busy (the re-probe confirmed it), so it
+    /// is dismissible and its Retry re-probes and re-delivers into a bare shell. Nothing is shown
+    /// while pending or once fully settled. The session is running in every case.
+    @ViewBuilder private var spawnBanner: some View {
+        switch runtime.spawnBanner(for: row.nodeId) {
+        case .unsaved:
+            bannerRow("Running, but not saved to the canvas", retry: nil)
+        case .registrationUnknown:
+            bannerRow("Couldn't confirm the canvas save yet",
+                      retry: { runtime.retrySpawn(nodeId: row.nodeId) })
+        case .launchUndelivered:
+            bannerRow("Session started, launch command not delivered",
+                      retry: { runtime.retrySpawn(nodeId: row.nodeId) })
+        case .launchDropped:
+            bannerRow("Launch skipped: the session was already busy",
+                      retry: { runtime.retryDroppedLaunch(nodeId: row.nodeId) },
+                      dismiss: { runtime.dismissDroppedBanner(nodeId: row.nodeId) })
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func bannerRow(_ text: String, retry: (() -> Void)?,
+                           dismiss: (() -> Void)? = nil) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(text).lineLimit(1)
+            Spacer()
+            if let retry {
+                Button("Retry", action: retry)
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered).tint(Theme.accent)
+            }
+            if let dismiss {
+                Button(action: dismiss) { Image(systemName: "xmark") }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered).tint(Theme.textSecondary)
+                    .accessibilityLabel("Dismiss")
+            }
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(Theme.needsYou)
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(Theme.card)
     }
 
     private var copiedView: some View {

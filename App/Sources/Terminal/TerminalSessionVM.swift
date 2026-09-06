@@ -19,6 +19,10 @@ public final class TerminalSessionVM: ObservableObject {
     let row: SessionRow
     public let handle = TerminalHandle()
 
+    /// Set ONLY for a session the phone SPAWNED (SPEC §7.11): after the fresh spawn settles, the VM
+    /// delivers this launch line and registers the node. nil for an ordinary co-attach.
+    private let pendingLaunch: PendingLaunch?
+
     // Captured once from the runtime so detached Tasks capture Sendable values, never read
     // @MainActor properties off-actor.
     private let rpc: RpcClienting
@@ -34,6 +38,17 @@ public final class TerminalSessionVM: ObservableObject {
     @Published public private(set) var sessionId: String = ""
     @Published public var ctrlLatched = false
     @Published public private(set) var persistent: Bool? = nil
+
+    /// This VM's settle-wait + first drive runs exactly ONCE (on the initial spawn). The spawn record
+    /// itself lives on the RUNTIME (`ServerRuntime.recordSpawn` → `NodetermKit.SpawnRecord`), which
+    /// decides from RECORD state whether a launch is still owed and re-drives on every reconnect until
+    /// settled — so a reconnect rejoin here has nothing to decide, only to record (a no-op on an
+    /// existing record).
+    private var didRunPendingLaunch = false
+    /// Shell-settle tracking for the launch line (SPEC §7.11.3): first-output seen + last-activity,
+    /// fed from the SAME `pty:data` subscription the emulator uses (see `subscribeStreams`).
+    private var launchSawFirstOutput = false
+    private var launchLastActivity = Date()
 
     private var tasks: [Task<Void, Never>] = []
     /// The in-flight join (pty:create) — tracked so onDisappear can cancel it, and so a create
@@ -74,9 +89,10 @@ public final class TerminalSessionVM: ObservableObject {
     }
     private var connectionObserver: Task<Void, Never>?
 
-    public init(runtime: ServerRuntime, row: SessionRow) {
+    public init(runtime: ServerRuntime, row: SessionRow, pendingLaunch: PendingLaunch? = nil) {
         self.runtime = runtime
         self.row = row
+        self.pendingLaunch = pendingLaunch
         self.rpc = runtime.rpcClient
         self.control = runtime.terminal
     }
@@ -191,6 +207,9 @@ public final class TerminalSessionVM: ObservableObject {
             if !sid.isEmpty, vid != viewerId {
                 enqueueOutbound { [control] in await control.kill(sessionId: sid, viewerId: vid) }
             }
+            // Lost the race, but the SESSION now exists and is ours (SPEC §7.11): hand it to the
+            // runtime so it still gets its launch line and registration, view or no view.
+            recordSpawnOffScreen(result, isReconnect: isReconnect)
             return
         }
 
@@ -209,6 +228,10 @@ public final class TerminalSessionVM: ObservableObject {
         if tornDown {
             let sid = result.sessionId
             if !sid.isEmpty { enqueueOutbound { [control] in await control.kill(sessionId: sid, viewerId: vid) } }
+            // Dismissed mid-create, but the SESSION now exists and is ours (SPEC §7.11): a
+            // spawned-but-unregistered session is the failure the spec warns about, so the runtime
+            // — not this dying VM — still delivers the launch and registers it.
+            recordSpawnOffScreen(result, isReconnect: isReconnect)
             return
         }
 
@@ -216,19 +239,101 @@ public final class TerminalSessionVM: ObservableObject {
         persistent = result.persistent
         guard !sessionId.isEmpty else { phase = .unavailable("No session"); return }
 
-        // Cold start (SPEC §7.2 step 2): fetch the persisted snapshot for replay.
+        // Cold start (SPEC §7.2 step 2): fetch the persisted snapshot for replay. NOT for a session
+        // the phone is spawning right now (SPEC §7.11.2 — the fresh branch MINUS the scrollback read
+        // and its restore separator: a session created one moment ago has no snapshot and was not
+        // restored). The skip is load-bearing: `RpcClient.ptyData` replays the early buffer only to
+        // the FIRST subscriber, so the emulator (and the launch-settle tracker it feeds) must
+        // subscribe before the round trip would let the shell's first output slip past.
+        //
+        // "Spawning" is decided from RECORD state, not `!isReconnect`: this is the spawn exactly when
+        // no `pty:create` has EVER answered for this node (no spawn record yet), so THIS fresh answer
+        // is the create. When the first `pty:create` was lost and the reconnect rejoin answers
+        // `fresh:true`, `!isReconnect` was false and painted the cold-start restore separator on a
+        // brand-new spawn; keying off the absent record treats it correctly as the spawn. A genuine
+        // reconnect of an already-recorded session (its tmux died, answered `fresh:true`) still has a
+        // record, so `spawning` is false and it takes the ordinary cold-start path.
+        let spawning = pendingLaunch != nil && !runtime.hasSpawnRecord(nodeId: persistKey)
         var scrollback: String? = nil
-        if result.fresh {
+        if result.fresh && !spawning {
             scrollback = try? await control.readScrollback(persistKey: persistKey)
             guard gen == attachGeneration else { return }
         }
 
-        handle.apply(SeedPaint.plan(result: result, scrollback: scrollback, isReconnect: isReconnect))
+        handle.apply(SeedPaint.plan(result: result, scrollback: scrollback, isReconnect: isReconnect,
+                                    spawning: spawning))
 
         subscribeStreams()
         reportSize(cols: lastCols, rows: lastRows, force: true)   // §7.3 initial local fit
         phase = .ready
         didCreate = true
+
+        // SPEC §7.11: the phone spawned this session. Record it on the RUNTIME first (a no-op on an
+        // existing record; the record survives this VM), then — once, for this VM — watch the shell
+        // settle and drive the launch line + registration. Whether a launch is OWED is the record's
+        // call (`fresh:false` on a node with no record is a lost first answer, still owed but gated),
+        // never `isReconnect`'s. The Task is deliberately outside `tasks` so a quick dismiss cannot
+        // cancel it; and even if it were, the runtime re-drives on reconnect.
+        if let launch = pendingLaunch {
+            runtime.recordSpawn(nodeId: persistKey, projectId: row.projectId,
+                                launch: launch, createFresh: result.fresh)
+            if !didRunPendingLaunch {
+                didRunPendingLaunch = true
+                Task { await self.settleThenDrive(waitForShell: launch.command != nil) }
+            }
+        }
+    }
+
+    // MARK: Spawn: shell settle → runtime drive (SPEC §7.11.3 / §7.11.4)
+
+    /// A create that resolved for a view that is gone (or lost its attach race) still spawned OUR
+    /// session: record it on the runtime and drive it. There is no emulator subscription left to
+    /// watch the pane's first output from, so nobody marks the record settled early and the drive
+    /// waits out the record's own 1.5 s silence cap (`SpawnRecord.notBefore`).
+    private func recordSpawnOffScreen(_ result: PtyCreateResult, isReconnect: Bool) {
+        guard let launch = pendingLaunch, result.closed == nil, result.unavailable == nil,
+              !result.sessionId.isEmpty else { return }
+        let nodeId = persistKey
+        runtime.recordSpawn(nodeId: nodeId, projectId: row.projectId,
+                            launch: launch, createFresh: result.fresh)
+        let runtime = self.runtime
+        Task { await runtime.driveSpawn(nodeId: nodeId) }
+    }
+
+    /// Watch the shell settle (200 ms quiet after first output, 1.5 s silence cap — SPEC §7.11.3),
+    /// tell the record so the launch may go NOW rather than at the cap, then drive. The wait is
+    /// enforced on the record, so a concurrent driver (an `onConnected` re-drive, a race loser) can
+    /// never type the launch before this observation — or the cap — has passed.
+    private func settleThenDrive(waitForShell: Bool) async {
+        if waitForShell { await awaitShellSettle() }
+        runtime.markSpawnSettled(nodeId: persistKey)
+        await runtime.driveSpawn(nodeId: persistKey)
+    }
+
+    /// Deliver the launch line only after the fresh shell settles (SPEC §7.11.3): a line written
+    /// into zsh's rc-file tty flush comes out mangled. Wait for 200 ms of quiet after the FIRST
+    /// output, with a 1.5 s cap on total silence (no output at all → write anyway). Activity is
+    /// noted by the emulator's own `pty:data` subscription (`subscribeStreams`), which is the first
+    /// subscriber and therefore the one that sees the replayed early bytes — a second, later
+    /// subscription would miss the shell's first output and always fall to the 1.5 s cap.
+    private func awaitShellSettle() async {
+        launchSawFirstOutput = false
+        launchLastActivity = Date()
+        let start = Date()
+        while true {
+            try? await Task.sleep(for: .milliseconds(40))
+            let now = Date()
+            if !launchSawFirstOutput {
+                if now.timeIntervalSince(start) >= 1.5 { break }             // silence cap
+            } else if now.timeIntervalSince(launchLastActivity) >= 0.2 {
+                break                                                        // 200 ms quiet after output
+            }
+        }
+    }
+
+    private func noteLaunchActivity() {
+        launchSawFirstOutput = true
+        launchLastActivity = Date()
     }
 
     // MARK: Event streams (SPEC §6.1/§7.5/§7.8)
@@ -242,12 +347,16 @@ public final class TerminalSessionVM: ObservableObject {
         tasks.forEach { $0.cancel() }
         tasks.removeAll()
         let sid = sessionId
-        // Live output (binary → decoded) — feed verbatim.
-        tasks.append(Task { [handle, rpc] in
+        // Live output (binary → decoded) — feed verbatim. For a session the phone is SPAWNING this
+        // same subscription also feeds the launch-settle tracker (SPEC §7.11.3): it is the FIRST
+        // `pty:data` subscriber, so it is the one that receives the replayed early buffer.
+        let tracksLaunch = pendingLaunch != nil
+        tasks.append(Task { [weak self, handle, rpc] in
             let stream = await rpc.ptyData(for: sid)
             for await data in stream {
                 if Task.isCancelled { break }
                 await handle.apply([.feedRaw(data)])
+                if tracksLaunch { await self?.noteLaunchActivity() }
             }
         })
         subscribeEv("pty:size:\(sid)") { [weak self] args in

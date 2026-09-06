@@ -17,6 +17,9 @@ struct AccountUsageRow: View {
             HStack(spacing: 8) {
                 Circle().fill(Theme.accent).frame(width: 8, height: 8)
                 Text(account.displayName).font(.body.weight(.semibold)).foregroundStyle(Theme.textPrimary)
+                // Agent chip: which CLI this row's account belongs to. Codex rows arrive from the
+                // server with agentId "codex" in the same AccountUsage shape, so they get "Codex".
+                agentChip
                 Spacer()
                 if account.status != "ok" {
                     Text(account.status).font(.caption).foregroundStyle(Theme.textTertiary)
@@ -32,6 +35,21 @@ struct AccountUsageRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private var agentChip: some View {
+        Text(agentLabel).font(.caption2.weight(.bold))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Theme.cardElevated).clipShape(Capsule())
+            .foregroundStyle(Theme.textSecondary)
+    }
+
+    private var agentLabel: String {
+        switch account.agentId {
+        case "claude": return "Claude"
+        case "codex": return "Codex"
+        default: return account.agentId.capitalized
+        }
     }
 }
 

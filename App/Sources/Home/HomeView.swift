@@ -15,6 +15,8 @@ public struct HomeView: View {
     @EnvironmentObject private var env: AppEnvironment
     @State private var showAddServer = false
     @State private var showSettings = false
+    /// The (server, project) a "New session" sheet is open for (SPEC §7.11).
+    @State private var newSessionFor: NewSessionContext?
 
     public init() {}
 
@@ -36,6 +38,9 @@ public struct HomeView: View {
             .sheet(isPresented: $showAddServer) { AddServerView() }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(item: $env.reauthNeeded) { profile in ReauthSheet(profile: profile) }
+            .sheet(item: $newSessionFor) { ctx in
+                NewSessionSheet(runtime: ctx.runtime, project: ctx.project)
+            }
             .navigationDestination(for: TerminalTarget.self) { target in
                 if let runtime = env.runtime(for: target.serverId),
                    let row = runtime.sessionRows.first(where: { $0.nodeId == target.nodeId }) {
@@ -44,7 +49,28 @@ public struct HomeView: View {
                     ContentUnavailableView("Session unavailable", systemImage: "terminal")
                 }
             }
+            // A session the phone just SPAWNED (SPEC §7.11): its node is not yet in `sessionRows`,
+            // so it carries the synthetic row + pending launch directly. Set by NewSessionSheet from
+            // HOME cards AND from server-detail rows; the destination on the root stack pushes at
+            // whatever depth the sheet was opened.
+            .navigationDestination(item: $env.newSessionNav) { nav in
+                if let runtime = env.runtime(for: nav.serverId) {
+                    TerminalScreen(runtime: runtime, row: nav.makeRow(), pendingLaunch: nav.launch)
+                } else {
+                    ContentUnavailableView("Session unavailable", systemImage: "terminal")
+                }
+            }
         }
+    }
+
+    /// Resolve the (server, project) behind a HOME project group so its "+" can open a sheet. Keyed
+    /// by the group's own (serverId, projectId) — never by a row or a title, so two same-named
+    /// projects each spawn into their own cwd (SPEC §7.11.2).
+    private func newSessionContext(for group: ProjectGroup) -> NewSessionContext? {
+        guard let runtime = env.runtime(for: group.serverId),
+              let project = runtime.workspace?.projects.first(where: { $0.id == group.projectId })
+        else { return nil }
+        return NewSessionContext(runtime: runtime, project: project)
     }
 
     // MARK: Header
@@ -85,15 +111,24 @@ public struct HomeView: View {
     // MARK: Sessions (SPEC §9.1 / §6.3)
 
     /// Collapsed project groups, persisted across launches (desktop-sidebar parity: disclosure
-    /// per project). Keyed by group title, machine-local — same tier as the desktop's
-    /// sidebarCollapsedItems.
+    /// per project). Keyed by the group id (`serverId/projectId`), machine-local — same tier as the
+    /// desktop's sidebarCollapsedItems. Entries written by earlier builds were keyed by the group
+    /// TITLE; those are still honored on read and migrated to the id on the next toggle, so nobody's
+    /// collapsed set is silently lost.
     @AppStorage("home.collapsedProjects") private var collapsedProjectsRaw = ""
     private var collapsedProjects: Set<String> {
         Set(collapsedProjectsRaw.split(separator: "\u{1f}").map(String.init))
     }
-    private func toggleCollapsed(_ title: String) {
+    private func isCollapsed(_ group: ProjectGroup) -> Bool {
+        let set = collapsedProjects
+        return set.contains(group.id) || set.contains(group.baseTitle)
+    }
+    private func toggleCollapsed(_ group: ProjectGroup) {
         var set = collapsedProjects
-        if set.contains(title) { set.remove(title) } else { set.insert(title) }
+        let wasCollapsed = set.contains(group.id) || set.contains(group.baseTitle)
+        set.remove(group.id)
+        set.remove(group.baseTitle)   // retire the legacy title key either way
+        if !wasCollapsed { set.insert(group.id) }
         collapsedProjectsRaw = set.sorted().joined(separator: "\u{1f}")
     }
 
@@ -104,35 +139,42 @@ public struct HomeView: View {
             if grouped.isEmpty {
                 EmptyHint("No live sessions on connected servers yet.")
             } else {
-                ForEach(grouped, id: \.title) { group in
-                    let collapsed = collapsedProjects.contains(group.title)
+                ForEach(grouped) { group in
+                    let collapsed = isCollapsed(group)
                     let agents = group.rows.filter { $0.agentId != nil }.count
                     let busy = group.rows.filter { $0.status?.state == .working }.count
                     // One card per project: a full-weight, 44pt disclosure header, sessions
                     // nested inside the same card when expanded (desktop sidebar's tree row).
                     VStack(spacing: 0) {
-                        Button { withAnimation(.snappy(duration: 0.2)) { toggleCollapsed(group.title) } } label: {
-                            HStack(spacing: 10) {
-                                Circle().fill(Theme.accent).frame(width: 8, height: 8)
-                                Text(group.title)
-                                    .font(.body.weight(.semibold)).foregroundStyle(Theme.textPrimary)
-                                Spacer()
-                                if busy > 0 {
-                                    Text("\(busy) running")
-                                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.running)
+                        HStack(spacing: 0) {
+                            Button { withAnimation(.snappy(duration: 0.2)) { toggleCollapsed(group) } } label: {
+                                HStack(spacing: 10) {
+                                    Circle().fill(Theme.accent).frame(width: 8, height: 8)
+                                    Text(group.title)
+                                        .font(.body.weight(.semibold)).foregroundStyle(Theme.textPrimary)
+                                    Spacer()
+                                    if busy > 0 {
+                                        Text("\(busy) running")
+                                            .font(.caption.weight(.semibold)).foregroundStyle(Theme.running)
+                                    }
+                                    Text(agents > 0 ? "\(group.rows.count) · \(agents) \(agents == 1 ? "agent" : "agents")"
+                                                    : "\(group.rows.count)")
+                                        .font(.caption).foregroundStyle(Theme.textTertiary)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.bold))
+                                        .rotationEffect(.degrees(collapsed ? 0 : 90))
+                                        .foregroundStyle(Theme.textTertiary)
                                 }
-                                Text(agents > 0 ? "\(group.rows.count) · \(agents) \(agents == 1 ? "agent" : "agents")"
-                                                : "\(group.rows.count)")
-                                    .font(.caption).foregroundStyle(Theme.textTertiary)
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.weight(.bold))
-                                    .rotationEffect(.degrees(collapsed ? 0 : 90))
-                                    .foregroundStyle(Theme.textTertiary)
+                                .padding(.leading, 14).padding(.vertical, 13)
+                                .contentShape(Rectangle())
                             }
-                            .padding(.horizontal, 14).padding(.vertical, 13)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
+                            // "+" opens the New session sheet for THIS project — a separate 44pt tap
+                            // target that does not toggle the collapse (SPEC §7.11).
+                            if let ctx = newSessionContext(for: group) {
+                                NewSessionButton { newSessionFor = ctx }.padding(.trailing, 6)
+                            }
                         }
-                        .buttonStyle(.plain)
                         if !collapsed {
                             Divider().background(Theme.separator)
                             ForEach(group.rows) { row in

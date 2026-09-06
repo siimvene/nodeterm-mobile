@@ -1,5 +1,7 @@
 import Foundation
-import NodetermKit
+
+// Lives in NodetermKit (moved from the App layer) so the HOME grouping rule — which decides WHICH
+// project a card's "+" spawns into — is unit-tested, not just rendered.
 
 /// One session row aggregated across servers for the HOME sessions list (SPEC §9.1). Pure value
 /// type — the view maps these to SwiftUI rows. Combines a persisted terminal node with its reduced
@@ -68,6 +70,22 @@ public enum SessionSection: String, CaseIterable, Sendable {
     }
 }
 
+/// One HOME project card (SPEC §9.1): the rows of ONE (server, project) pair. `id` is the stable
+/// group key (`serverId/projectId`) — the collapsed-state key and the `ForEach` identity; `title`
+/// is display-only and may carry a disambiguator when two projects share a name.
+public struct ProjectGroup: Identifiable, Sendable, Equatable {
+    public var id: String
+    public var serverId: String
+    public var projectId: String
+    /// The undecorated title (server-prefixed on multi-server setups); the legacy collapsed key.
+    public var baseTitle: String
+    public var title: String
+    public var projectCwd: String?
+    public var rows: [SessionRow]
+
+    public static func key(serverId: String, projectId: String) -> String { "\(serverId)/\(projectId)" }
+}
+
 public enum SessionListModel {
     /// Build the flat rows from every connected server's workspace + reduced statuses (SPEC §9.1).
     /// Only `terminal`-kind nodes in non-`closed` projects; SSH projects are read-only but still
@@ -92,23 +110,63 @@ public enum SessionListModel {
         return rows
     }
 
-    /// Group + sort for display (SPEC §6.3): section by reduced state; within a section newest-first
-    /// by `lastTransitionAt`, missing clocks last (no invented timestamp), then stable by title.
-    /// HOME grouping: by PROJECT (server first when several are connected), preserving workspace
-    /// order — the desktop sidebar's shape. Status stays a per-row badge: on the phone most rows
-    /// sit in `unknown` anyway (desktop-spawned sessions report hooks to the desktop instance),
-    /// so status sections degenerated into one big UNKNOWN list.
-    public static func groupedByProject(_ rows: [SessionRow], multiServer: Bool)
-        -> [(title: String, rows: [SessionRow])] {
+    /// HOME grouping: one card per PROJECT (server first when several are connected), preserving
+    /// workspace order — the desktop sidebar's shape. Status stays a per-row badge: on the phone
+    /// most rows sit in `unknown` anyway (desktop-spawned sessions report hooks to the desktop
+    /// instance), so status sections degenerated into one big UNKNOWN list.
+    ///
+    /// Buckets are keyed by **(serverId, projectId)**, never by the project's NAME: two projects on
+    /// one server may share a title (two clones of the same repo), and a title-keyed bucket merged
+    /// them into one card whose "+" then spawned into whichever project happened to come first — a
+    /// permanently wrong cwd (SPEC §7.11.2). Colliding titles are disambiguated for DISPLAY only:
+    /// by the project cwd's basename when those differ, else with an ordinal (" (2)", " (3)"…).
+    public static func groupedByProject(_ rows: [SessionRow], multiServer: Bool) -> [ProjectGroup] {
         var order: [String] = []
         var buckets: [String: [SessionRow]] = [:]
         for row in rows {
-            let title = multiServer ? "\(row.serverName) · \(row.projectName)" : row.projectName
-            if buckets[title] == nil { order.append(title) }
-            buckets[title, default: []].append(row)
+            let key = ProjectGroup.key(serverId: row.serverId, projectId: row.projectId)
+            if buckets[key] == nil { order.append(key) }
+            buckets[key, default: []].append(row)
         }
-        return order.map { (title: $0, rows: buckets[$0]!) }
+        var groups: [ProjectGroup] = order.compactMap { key in
+            guard let rows = buckets[key], let first = rows.first else { return nil }
+            let base = multiServer ? "\(first.serverName) · \(first.projectName)" : first.projectName
+            return ProjectGroup(id: key, serverId: first.serverId, projectId: first.projectId,
+                                baseTitle: base, title: base, projectCwd: first.projectCwd, rows: rows)
+        }
+        disambiguateTitles(&groups)
+        return groups
     }
+
+    /// Give same-titled groups distinct display titles. The cwd basename is preferred (it is what
+    /// tells two clones apart); an ordinal is the fallback when basenames are missing or also equal.
+    /// The first group of a collision set keeps its bare title only in the ordinal scheme.
+    private static func disambiguateTitles(_ groups: inout [ProjectGroup]) {
+        var byTitle: [String: [Int]] = [:]
+        for (i, g) in groups.enumerated() { byTitle[g.baseTitle, default: []].append(i) }
+        for (_, indices) in byTitle where indices.count > 1 {
+            let basenames = indices.map { groups[$0].projectCwd.flatMap(cwdBasename) }
+            let distinct = Set(basenames.compactMap { $0 })
+            if distinct.count == indices.count {
+                for (i, name) in zip(indices, basenames) {
+                    if let name { groups[i].title = "\(groups[i].baseTitle) · \(name)" }
+                }
+            } else {
+                for (n, i) in indices.enumerated() where n > 0 {
+                    groups[i].title = "\(groups[i].baseTitle) (\(n + 1))"
+                }
+            }
+        }
+    }
+
+    private static func cwdBasename(_ cwd: String) -> String? {
+        let trimmed = cwd.hasSuffix("/") && cwd.count > 1 ? String(cwd.dropLast()) : cwd
+        let leaf = trimmed.split(separator: "/").last.map(String.init) ?? trimmed
+        return leaf.isEmpty ? nil : leaf
+    }
+
+    /// Group + sort for display (SPEC §6.3): section by reduced state; within a section newest-first
+    /// by `lastTransitionAt`, missing clocks last (no invented timestamp), then stable by title.
 
     public static func grouped(_ rows: [SessionRow]) -> [(section: SessionSection, rows: [SessionRow])] {
         SessionSection.allCases.compactMap { section in

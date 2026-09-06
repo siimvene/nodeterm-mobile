@@ -48,8 +48,12 @@ public enum TerminalSeedPaint {
 
     /// Decide the ordered emulator instructions for a `pty:create` result (SPEC §7.2). Set
     /// `isReattach` for the reconnect re-issue path (SPEC §4.8): the native emulator still holds the
-    /// pre-drop content, so `screen` is treated as a RESYNC (reset-then-paint), never an append.
-    public static func plan(for result: PtyCreateResult, isReattach: Bool = false) -> [EmulatorInstruction] {
+    /// pre-drop content, so `screen` is treated as a RESYNC (reset-then-paint), never an append. Set
+    /// `spawning` when the PHONE is spawning the session (SPEC §7.11.2): the fresh branch MINUS the
+    /// scrollback replay and the cold-start separator — a session created one moment ago has no
+    /// snapshot, and the separator is the RESTORE marker, which this is not.
+    public static func plan(for result: PtyCreateResult, isReattach: Bool = false,
+                            spawning: Bool = false) -> [EmulatorInstruction] {
         // SPEC §7.2 step 1: refusals short-circuit — never respawn, never paint.
         if let closed = result.closed { return [.showClosed(by: closed.by)] }
         if let unavailable = result.unavailable { return [.showUnavailable(reason: unavailable)] }
@@ -59,8 +63,11 @@ public enum TerminalSeedPaint {
         if result.fresh {
             // SPEC §7.2 step 2: cold start (tmux server died / phone-first open). Replay the
             // persisted scrollback + separator. Explicitly NO agent auto-resume (owner concern).
-            plan.append(.replayScrollback)
-            plan.append(.coldStartSeparator)
+            // A phone SPAWN is `fresh:true` too, but nothing was restored (SPEC §7.11.2).
+            if !spawning {
+                plan.append(.replayScrollback)
+                plan.append(.coldStartSeparator)
+            }
         } else {
             // SPEC §4.8: on a reconnect re-attach the emulator holds stale content — clear it FIRST
             // so a present `screen` replaces rather than stacks (the §7.8 corruption).

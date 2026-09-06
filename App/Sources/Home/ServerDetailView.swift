@@ -7,6 +7,8 @@ import NodetermKit
 public struct ServerDetailView: View {
     @EnvironmentObject private var env: AppEnvironment
     let profile: ServerProfile
+    /// The (server, project) a "New session" sheet is open for (SPEC §7.11).
+    @State private var newSessionFor: NewSessionContext?
 
     public init(profile: ServerProfile) { self.profile = profile }
 
@@ -25,6 +27,9 @@ public struct ServerDetailView: View {
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle(profile.name)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $newSessionFor) { ctx in
+            NewSessionSheet(runtime: ctx.runtime, project: ctx.project)
+        }
     }
 
     @ViewBuilder private func projects(_ runtime: ServerRuntime) -> some View {
@@ -44,6 +49,11 @@ public struct ServerDetailView: View {
                                 .foregroundStyle(Theme.textSecondary)
                         }
                         Spacer()
+                        // Start a new session under this project (SPEC §7.11). The sheet itself
+                        // refuses SSH / cwd-less projects, so the button always shows.
+                        NewSessionButton {
+                            newSessionFor = NewSessionContext(runtime: runtime, project: project)
+                        }
                     }
                     let rows = SessionListModel.rows(serverId: profile.id, serverName: profile.name,
                                                      workspace: Workspace(projects: [project])) { runtime.status(for: $0) }

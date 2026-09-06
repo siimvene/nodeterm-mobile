@@ -61,6 +61,12 @@ public enum RpcMethod {
     // workspace / settings (§5.2) — read-only for the phone
     public static let workspaceLoad = "workspace:load"
     public static let settingsLoad = "settings:load"
+    /// Register a session the phone SPAWNED as a node on a project's canvas (§7.11.4). This is the
+    /// one scoped workspace write the phone may make — `workspace:save` stays forbidden.
+    public static let workspaceRegisterNode = "workspace:register-node"
+
+    // agent CLI capability probe (§7.11.3) — feature-detected flags, tolerant decode.
+    public static let claudeCliCaps = "claude-cli:caps"
 
     // agent status & approvals (§5.3)
     public static let agentAnswerPermission = "agent:answer-permission"

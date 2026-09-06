@@ -20,6 +20,12 @@ with a dependency-free protocol core (`NodetermKit`) that is unit-tested on macO
   server profile; nothing is stored in `UserDefaults` or synced.
 - **Live sessions, grouped by project** — collapsible project cards with per-project
   session/agent counts and a running counter fed by live agent status over the wire.
+- **Start a session** — tap "+" on any project (Home card or server detail) to spawn a new
+  Terminal, Claude, Codex, or Gemini session under it, optionally on a managed account. The phone
+  mints the node, delivers the launch line once the shell settles, and registers it on the canvas.
+  Registration is owned by the server connection, not the screen: a socket drop mid-spawn is
+  resumed on reconnect, and the terminal shows a one-line banner only when the canvas save is
+  confirmed missing ("not saved") or could not be confirmed yet ("Retry").
 - **Real terminals** — each session is a live co-attached tmux view via SwiftTerm.
   Touch-scroll through history, drag to select, an accessory toolbar for the keys a
   soft keyboard lacks (Esc, arrows, Paste, Mic, ⇧⏎), and a one-tap keyboard dismiss.

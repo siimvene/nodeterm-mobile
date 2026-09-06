@@ -51,3 +51,21 @@ import Testing
 // MARK: - Terminal session controller (SPEC §7)
 
 @Test func terminalSession() async { await runTerminalSessionSmoke() }
+
+// MARK: - New-session plan: mint / launch grammar / register payload (SPEC §7.11)
+
+@Test func newSessionPlan() { runNewSessionPlanTests() }
+@Test func newSessionPermissionMode() { runPermissionModeResolutionTests() }
+@Test func newSessionSettingsRowTolerance() { runSettingsRowToleranceTests() }
+
+// MARK: - Spawn read-back decision + launch re-delivery (SPEC §7.11.3 / §7.11.4)
+
+@Test func registrationOutcome() { runRegistrationOutcomeTests() }
+@Test func launchRedelivery() { runLaunchRedeliveryTests() }
+@Test func spawnRecord() { runSpawnRecordTests() }
+@Test func spawnTransportFault() { runSpawnTransportFaultTests() }
+@Test func derivedTitle() { runDerivedTitleTests() }
+
+// MARK: - HOME session list: rows + project grouping (SPEC §9.1)
+
+@Test func sessionListModel() { runSessionListModelTests() }

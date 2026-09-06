@@ -26,6 +26,10 @@ public final class AppEnvironment: ObservableObject {
     @Published public private(set) var profiles: [ServerProfile] = []
     /// A server whose session expired and needs a login sheet (SPEC §3.5).
     @Published public var reauthNeeded: ServerProfile?
+    /// A pending push to the terminal for a session the phone just SPAWNED (SPEC §7.11). Set by
+    /// NewSessionSheet on Start; HOME's `navigationDestination(item:)` pushes the TerminalScreen for
+    /// the synthetic (not-yet-registered) row it carries. One at a time — a second spawn replaces it.
+    @Published public var newSessionNav: NewSessionNav?
 
     /// Per-runtime `objectWillChange` relays (SPEC §9.1: HOME's tiles/rows/server states read the
     /// runtimes' @Published state through computed properties here — without the relay a nested
@@ -305,7 +309,7 @@ public final class AppEnvironment: ObservableObject {
 
     /// All HOME session rows across every connected server, grouped by project (desktop-sidebar
     /// shape; status is the per-row badge — see SessionListModel.groupedByProject).
-    public var groupedSessions: [(title: String, rows: [SessionRow])] {
+    public var groupedSessions: [ProjectGroup] {
         SessionListModel.groupedByProject(connectedRuntimes.flatMap { $0.sessionRows },
                                           multiServer: profiles.count > 1)
     }
