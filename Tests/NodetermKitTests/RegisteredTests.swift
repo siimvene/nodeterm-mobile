@@ -64,6 +64,7 @@ import Testing
 @Test func launchRedelivery() { runLaunchRedeliveryTests() }
 @Test func spawnRecord() { runSpawnRecordTests() }
 @Test func spawnTransportFault() { runSpawnTransportFaultTests() }
+@Test func accountFallback() { runAccountFallbackTests() }
 @Test func derivedTitle() { runDerivedTitleTests() }
 
 // MARK: - HOME session list: rows + project grouping (SPEC §9.1)

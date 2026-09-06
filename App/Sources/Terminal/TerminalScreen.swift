@@ -37,6 +37,12 @@ public struct TerminalScreen: View {
     public var body: some View {
         VStack(spacing: 0) {
             spawnBanner   // SPEC §7.11.4: the canvas-save outcome of a session this phone spawned
+            if vm.accountFellBack {
+                // Desktop parity: the account chip's folder-missing warning. The node keeps its
+                // account; the session runs as the System account until the folder exists again.
+                bannerRow("Account folder missing, running as the System account",
+                          retry: nil, dismiss: { vm.dismissAccountFallback() })
+            }
             terminalSurface
             AccessoryToolbar(vm: vm, settings: settings, onMic: { showDictation = true })
         }

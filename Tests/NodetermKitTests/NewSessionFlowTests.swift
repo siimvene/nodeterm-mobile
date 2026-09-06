@@ -329,3 +329,14 @@ public func runDerivedTitleTests() {
     check(NewSessionPlan.derivedTitle(agentId: "opencode") == "Mobile session",
           "an id outside the phone's builtins ⇒ Mobile session (matches the host's config miss)")
 }
+
+// MARK: - PtyCreateResult.accountFellBack (consort finding): the flag is read, not dropped
+
+public func runAccountFallbackTests() {
+    func r(_ v: JSONValue?) -> Bool { PtyCreateResult(sessionId: "s", fresh: true, accountFallback: v).accountFellBack }
+    check(r(nil) == false, "absent ⇒ no fallback")
+    check(r(.null) == false, "null ⇒ no fallback")
+    check(r(.bool(false)) == false, "false ⇒ no fallback")
+    check(r(.bool(true)) == true, "true ⇒ fallback (the desktop's shape)")
+    check(r(.object(["from": .string("acct-1")])) == true, "a richer future shape still counts as a fallback")
+}

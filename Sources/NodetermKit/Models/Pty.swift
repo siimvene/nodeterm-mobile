@@ -122,6 +122,20 @@ public struct PtyCreateResult: Codable, Sendable, Equatable {
 
     /// True when `pty:create` refused (empty sessionId with `closed`/`unavailable` set, §11.5).
     public var isRefusal: Bool { sessionId.isEmpty && (closed != nil || unavailable != nil) }
+
+    /// The requested managed account was unavailable at spawn and the session runs as the host's
+    /// System account instead. The desktop sends a bare `true`; read anything that is not absent /
+    /// `null` / `false` as a fallback so a future richer shape (an object naming the account) still
+    /// counts. The node KEEPS its `accountId` — the desktop flags the account chip and leaves the
+    /// node's account as configured, and so does the phone (consort finding: the flag was decoded
+    /// and then ignored).
+    public var accountFellBack: Bool {
+        switch accountFallback {
+        case nil, .null: return false
+        case .bool(let b): return b
+        default: return true
+        }
+    }
 }
 
 /// `TmuxStatus` from `pty:tmux-status` (SPEC §11.5). `platform == nil` means the read FAILED — do

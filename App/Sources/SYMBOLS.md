@@ -160,3 +160,16 @@ builders actually shipped; the real names/inits are below.
    fallback.
 6. `TmuxStatus` "tmux not found" banner (SPEC §11.5) is not yet surfaced in the UI (method wired in
    the protocol, no screen). Follow-up.
+
+## Known gaps — New Session flow (SPEC §7.11), deferred from the 2026-09-06 cross-vendor review
+
+7. **A re-auth replaces the `ServerRuntime`, and the in-memory spawn records go with it.** A spawn
+   still pending its launch or registration when the session is re-authenticated (a fresh runtime
+   is built) is forgotten: the session runs, but nobody types its launch or registers it, and no
+   banner says so. The records would need to persist per server (or survive the runtime swap) to
+   close this. Deferred: re-auth mid-spawn is a narrow window; the drive is otherwise re-run on
+   every reconnect.
+8. **`ClaudeCliCaps.sessionIdFlag` is probed and unused.** The desktop pins a Claude session id at
+   launch through `--session-id`; the phone's `register-node` payload carries no such field and the
+   launch line does not pass one, so a phone-spawned Claude session gets its id from the CLI. Wired
+   into the caps model for parity; the flag is honored once the register payload can carry it.

@@ -38,6 +38,11 @@ public final class TerminalSessionVM: ObservableObject {
     @Published public private(set) var sessionId: String = ""
     @Published public var ctrlLatched = false
     @Published public private(set) var persistent: Bool? = nil
+    /// `pty:create` answered `accountFallback`: the node's managed account had no config dir at
+    /// spawn, so the session runs as the host's System account. The node KEEPS its `accountId`
+    /// (desktop parity: the account chip is flagged, the node is not rewritten). Shown as a
+    /// dismissible banner (consort finding: the flag was decoded and dropped on the floor).
+    @Published public private(set) var accountFellBack = false
 
     /// This VM's settle-wait + first drive runs exactly ONCE (on the initial spawn). The spawn record
     /// itself lives on the RUNTIME (`ServerRuntime.recordSpawn` → `NodetermKit.SpawnRecord`), which
@@ -150,7 +155,18 @@ public final class TerminalSessionVM: ObservableObject {
         // viewer back in the size ledger.
         attachGeneration += 1
         connectionObserver?.cancel(); connectionObserver = nil
-        joinTask?.cancel(); joinTask = nil
+        // A `pty:create` that is THE SPAWN (SPEC §7.11: a launch is pending and no record exists yet)
+        // must be allowed to finish: cancelling it resumes the request with `.disconnected` while
+        // the server goes on creating the session, so it would exist with nobody to type its launch
+        // or register it — the exact failure §7.11 warns about, reached by dismissing the screen
+        // during the create (consort finding). Left to run, the answer lands in `join`'s
+        // generation / `tornDown` branch, which kills this viewer AND hands the session to the
+        // runtime (`recordSpawnOffScreen`). Any other in-flight join is cancelled as before.
+        if spawnCreateInFlight {
+            joinTask = nil
+        } else {
+            joinTask?.cancel(); joinTask = nil
+        }
         tasks.forEach { $0.cancel() }; tasks.removeAll()
         let sid = sessionId, vid = viewerId
         if !sid.isEmpty {
@@ -159,6 +175,15 @@ public final class TerminalSessionVM: ObservableObject {
         // A create still in flight is handled by join()'s post-create check: it sends the kill
         // itself once the sessionId is known (SPEC §7.4).
     }
+
+    /// The join in flight is the spawn's own `pty:create`: a launch is pending for this node and no
+    /// `pty:create` has ever answered for it (no spawn record on the runtime yet).
+    private var spawnCreateInFlight: Bool {
+        joinTask != nil && pendingLaunch != nil && !runtime.hasSpawnRecord(nodeId: persistKey)
+    }
+
+    /// Hide the account-fallback banner (the session keeps running as the System account).
+    public func dismissAccountFallback() { accountFellBack = false }
 
     /// App → background OR view off-screen kept warm (SPEC §7.3): PARK, do not kill.
     public func park() {
@@ -238,6 +263,7 @@ public final class TerminalSessionVM: ObservableObject {
         sessionId = result.sessionId
         persistent = result.persistent
         guard !sessionId.isEmpty else { phase = .unavailable("No session"); return }
+        if result.accountFellBack { accountFellBack = true }
 
         // Cold start (SPEC §7.2 step 2): fetch the persisted snapshot for replay. NOT for a session
         // the phone is spawning right now (SPEC §7.11.2 — the fresh branch MINUS the scrollback read

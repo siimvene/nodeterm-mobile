@@ -140,19 +140,32 @@ public final class ServerRuntime: ObservableObject, Identifiable {
     /// `workspace:load` → adopt the snapshot. Returns whether a FRESH snapshot was adopted: on
     /// `false` the previous snapshot is kept for display but is NOT evidence of anything — the
     /// §7.11.4 read-back must treat a failed load as UNKNOWN, never as "the node is absent".
+    ///
+    /// Concurrent loads (two spawn drives, a drive plus a Home refresh) are ordered by a generation
+    /// counter: an answer that arrives after a NEWER load already landed is discarded, never adopted
+    /// over the fresher snapshot (consort finding). It still returns `true` — a fresh snapshot IS in
+    /// place, just not this call's — so the read-back that follows reads the freshest one.
     @discardableResult
     public func reloadWorkspace() async -> Bool {
+        workspaceLoadGeneration += 1
+        let gen = workspaceLoadGeneration
         do {
             let result = try await rpc.request(RpcMethod.workspaceLoad, [])
             let ws = try result.decoded(as: Workspace.self)
-            await workspaceStore.replace(with: ws)
+            guard gen > workspaceAdoptedGeneration else { return true }   // a newer load already landed
+            workspaceAdoptedGeneration = gen
+            // Adopt in memory BEFORE the store hop: the read-back reads `workspace`, and a suspension
+            // here would let a newer load's adoption be overwritten by this older answer.
             workspace = ws
+            await workspaceStore.replace(with: ws)
             return true
         } catch {
             // A failed load is not fatal; keep the last snapshot. (Secrets never logged, §10.2.)
             return false
         }
     }
+    private var workspaceLoadGeneration = 0
+    private var workspaceAdoptedGeneration = 0
 
     // MARK: New-session spawn helpers (SPEC §7.11)
 
@@ -306,10 +319,17 @@ public final class ServerRuntime: ObservableObject, Identifiable {
             }
             do {
                 if try await registerNode(projectId: record.projectId, payload: record.payload) {
-                    // No canvas:mut / external-change subscription picks this up (SPEC §7.11.5), so
-                    // reload so the phone's own Home list shows the new node.
-                    await reloadWorkspace()
+                    // The server's `true` IS the registration: settle the record on it, whatever the
+                    // reload below does. No canvas:mut / external-change subscription picks the new
+                    // node up (SPEC §7.11.5), so reload so the phone's own Home list shows it — and
+                    // retry that reload a few times when it fails, because a registered node the
+                    // list never shows reads exactly like an unsaved one (consort finding).
                     spawns[nodeId]?.apply(registration: .registered)
+                    for reloadAttempt in 0..<3 {
+                        if reloadAttempt > 0 { try? await Task.sleep(for: .milliseconds(500)) }
+                        guard await rpc.connectionState() == .connected else { return }
+                        if await reloadWorkspace() { break }
+                    }
                     return
                 }
             } catch let err as RpcError where err == .disconnected || err == .timeout {

@@ -98,6 +98,15 @@ public struct NewSessionSheet: View {
     @State private var codexAccounts: [ManagedAccount] = []
     @State private var settingsMode = "auto"
     @State private var caps = ClaudeCliCaps()
+    /// `settings:load` AND `claude-cli:caps` have both answered (or failed, tolerated). Start is
+    /// held until then: a Start pressed earlier would mint a launch line from the all-false caps
+    /// default and a permission mode from the `auto` placeholder — a guess where a read was one
+    /// round trip away (consort finding).
+    @State private var loaded = false
+    /// The user touched the account picker. `resetAccountDefault` (the load completing, or a later
+    /// re-run) must not overwrite an explicit pick with the project default (consort finding); an
+    /// agent switch resets it, since the pick belonged to the other agent's account list.
+    @State private var userPickedAccount = false
 
     /// SPEC §7.11.2: only a LOCAL project with a cwd can spawn here. An `unavailable` project (its
     /// `project.json` is unreadable right now) is also refused: a `register-node` against it can only
@@ -105,6 +114,12 @@ public struct NewSessionSheet: View {
     /// explaining why the "+" does nothing yet.
     private var canStart: Bool {
         !project.isSSH && (project.cwd?.isEmpty == false) && project.unavailable != true
+    }
+
+    /// The account picker's binding: a write through it is a USER pick (a programmatic default goes
+    /// straight to `accountId`), so `resetAccountDefault` can tell the two apart.
+    private var pickedAccount: Binding<String?> {
+        Binding(get: { accountId }, set: { accountId = $0; userPickedAccount = true })
     }
 
     /// The usable managed accounts for the current agent (skip pending / host-pinned, §7.11.3).
@@ -131,11 +146,19 @@ public struct NewSessionSheet: View {
                     Button("Cancel") { dismiss() }.tint(Theme.textSecondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Start") { start() }.disabled(!canStart).tint(Theme.accent)
+                    if loaded {
+                        Button("Start") { start() }.disabled(!canStart).tint(Theme.accent)
+                    } else {
+                        ProgressView().tint(Theme.textSecondary)
+                            .accessibilityLabel("Loading server settings")
+                    }
                 }
             }
             .task { await load() }
-            .onChange(of: agentChoice) { _, _ in resetAccountDefault() }
+            .onChange(of: agentChoice) { _, _ in
+                userPickedAccount = false
+                resetAccountDefault()
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -155,7 +178,7 @@ public struct NewSessionSheet: View {
 
     private var accountSection: some View {
         Section("Account") {
-            Picker("Account", selection: $accountId) {
+            Picker("Account", selection: pickedAccount) {
                 Text("System account").tag(String?.none)
                 ForEach(accountsForAgent) { account in
                     Text(account.displayName).tag(String?.some(account.id))
@@ -243,20 +266,31 @@ public struct NewSessionSheet: View {
     // MARK: Load / actions
 
     private func load() async {
-        // Tolerate failure: no accounts, caps false (SPEC §7.11.3).
-        if let settings = await runtime.loadSettings() {
+        // Tolerate failure: no accounts, caps false (SPEC §7.11.3). Both reads run together — Start
+        // stays hidden behind a spinner until both have answered (`loaded`), so a launch line is
+        // never minted from the placeholders. The account default is applied as soon as the
+        // accounts are known, not after the caps read too, so the picker never shows a list the
+        // user can act on and then snaps it back.
+        async let settingsRead = runtime.loadSettings()
+        async let capsRead = runtime.loadClaudeCliCaps()
+        if let settings = await settingsRead {
             claudeAccounts = settings.claudeAccounts
             codexAccounts = settings.codexAccounts
             settingsMode = settings.claudePermissionMode
         }
-        caps = await runtime.loadClaudeCliCaps()
         resetAccountDefault()
+        caps = await capsRead
+        loaded = true
     }
 
     /// Preselect the project's default account when it is a usable option for this agent, else the
-    /// System account (SPEC §7.11.3).
+    /// System account (SPEC §7.11.3). `Project.defaultAccountId` is a CLAUDE concept on the desktop
+    /// (its Canvas applies it to Claude targets only; a Codex target has no project default), so it
+    /// is honored for the Claude agent alone — an id that happened to match a Codex account would
+    /// otherwise be preselected for Codex (consort finding). Never overrides an explicit user pick.
     private func resetAccountDefault() {
-        if let preferred = project.defaultAccountId,
+        guard !userPickedAccount else { return }
+        if agentChoice == .claude, let preferred = project.defaultAccountId,
            accountsForAgent.contains(where: { $0.id == preferred }) {
             accountId = preferred
         } else {
@@ -265,7 +299,7 @@ public struct NewSessionSheet: View {
     }
 
     private func start() {
-        guard canStart else { return }
+        guard canStart, loaded else { return }
         let agentId = agentChoice.agentId
         // The desktop's resolvePermissionMode (SPEC §7.11.3): a VALID project override, else a
         // VALID global setting, else `auto`. The claude-only auto gate applies inside launchCommand.
