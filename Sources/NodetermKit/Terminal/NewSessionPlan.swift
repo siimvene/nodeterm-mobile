@@ -87,8 +87,11 @@ public enum NewSessionPlan {
 
     /// The account list the sheet offers: `settings:load`'s rows, then any `claude-accounts:peer-list`
     /// row whose id is not already present (SPEC §7.11.3). Settings win on a shared id (that row is
-    /// the server's own account, and its `pending`/`host` flags are the authoritative ones); order is
-    /// stable so the picker does not reshuffle when the peer read lands after the settings read.
+    /// the server's own account, and its `pending`/`host` flags are the authoritative ones — a spawn
+    /// of that id resolves to the server's OWN dir first, so an unusable settings row must keep
+    /// masking a same-id peer row rather than let the peer's label front the server's credentials;
+    /// the server does not advertise such ids anyway); order is stable so the picker does not
+    /// reshuffle when the peer read lands after the settings read.
     public static func mergeAccounts(settings: [ManagedAccount], peer: [ManagedAccount]) -> [ManagedAccount] {
         var seen = Set(settings.map(\.id))
         var out = settings

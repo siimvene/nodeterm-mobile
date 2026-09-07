@@ -34,7 +34,9 @@ symbols below by reading the Kit sources.
   → valid setting → `auto`), `isPermissionMode(_:)`, `defaultPermissionMode`,
   `registerPayload(id:title:agentId:accountId:) -> JSONValue`,
   `derivedTitle(agentId:) -> String` (the canvas's own no-title label — `"Claude Code" / "Codex" /
-  "Gemini"`, else `"Mobile session"` — so the phone's synthetic row matches; SPEC §7.11).
+  "Gemini"`, else `"Mobile session"` — so the phone's synthetic row matches; SPEC §7.11),
+  `mergeAccounts(settings:peer:) -> [ManagedAccount]` (settings rows first, `claude-accounts:peer-list`
+  rows appended for unseen ids; `RpcMethod.claudeAccountsPeerList`, SPEC §7.11.3).
 - `RegistrationOutcome` — `.registered / .unsaved / .unknown`;
   `decide(workspace:loadSucceeded:projectId:nodeId:)` — the §7.11.4 read-back table (a failed load,
   a missing project, or `unavailable == true` ⇒ `.unknown`, never "not saved").
