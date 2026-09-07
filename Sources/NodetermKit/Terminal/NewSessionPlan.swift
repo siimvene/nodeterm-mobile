@@ -85,6 +85,20 @@ public enum NewSessionPlan {
     /// and `gemini --approval-mode yolo`, so it is the bypass for every builtin the phone can spawn.
     public static func isBypassMode(_ mode: String) -> Bool { mode == "bypassPermissions" }
 
+    /// The account list the sheet offers: `settings:load`'s rows, then any `claude-accounts:peer-list`
+    /// row whose id is not already present (SPEC §7.11.3). Settings win on a shared id (that row is
+    /// the server's own account, and its `pending`/`host` flags are the authoritative ones); order is
+    /// stable so the picker does not reshuffle when the peer read lands after the settings read.
+    public static func mergeAccounts(settings: [ManagedAccount], peer: [ManagedAccount]) -> [ManagedAccount] {
+        var seen = Set(settings.map(\.id))
+        var out = settings
+        for account in peer where !seen.contains(account.id) {
+            seen.insert(account.id)
+            out.append(account)
+        }
+        return out
+    }
+
     /// Assemble the launch line for a FRESH session, mirroring the desktop's `assembleLaunchCommand`
     /// + `approvalFlags` for the three builtins the phone can spawn. Returns `nil` for a plain
     /// terminal (no `agentId`) or any agent outside claude/codex/gemini — nothing is typed then.

@@ -55,6 +55,7 @@ import Testing
 // MARK: - New-session plan: mint / launch grammar / register payload (SPEC §7.11)
 
 @Test func newSessionPlan() { runNewSessionPlanTests() }
+@Test func mergeAccounts() { runMergeAccountsTests() }
 @Test func newSessionPermissionMode() { runPermissionModeResolutionTests() }
 @Test func newSessionSettingsRowTolerance() { runSettingsRowToleranceTests() }
 

@@ -176,6 +176,14 @@ public final class ServerRuntime: ObservableObject, Identifiable {
         return try? result.decoded(as: Settings.self)
     }
 
+    /// `claude-accounts:peer-list` (SPEC §7.11.3): the managed Claude accounts a co-located desktop
+    /// peer owns and this server can spawn under. The server already filters them to spawnable rows.
+    /// Tolerant: a desktop or a peer-less server has no handler, and any failure reads as "none".
+    public func loadPeerClaudeAccounts() async -> [ManagedAccount] {
+        guard let result = try? await rpc.request(RpcMethod.claudeAccountsPeerList, []) else { return [] }
+        return (try? result.decoded(as: [ManagedAccount].self)) ?? []
+    }
+
     /// Probe `claude-cli:caps` for the launch grammar (SPEC §7.11.3). Fail-closed: any failure →
     /// the all-false default, so `--permission-mode auto` is never emitted on a guess.
     public func loadClaudeCliCaps() async -> ClaudeCliCaps {

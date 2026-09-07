@@ -272,12 +272,18 @@ public struct NewSessionSheet: View {
         // accounts are known, not after the caps read too, so the picker never shows a list the
         // user can act on and then snaps it back.
         async let settingsRead = runtime.loadSettings()
+        async let peerRead = runtime.loadPeerClaudeAccounts()
         async let capsRead = runtime.loadClaudeCliCaps()
-        if let settings = await settingsRead {
-            claudeAccounts = settings.claudeAccounts
+        let settings = await settingsRead
+        if let settings {
             codexAccounts = settings.codexAccounts
             settingsMode = settings.claudePermissionMode
         }
+        // A Server Edition beside a desktop lists no accounts of its own; the desktop's managed
+        // Claude accounts arrive through the peer list and are unioned in (SPEC §7.11.3), so the
+        // picker exists on that topology at all (it used to offer only the System account).
+        claudeAccounts = NewSessionPlan.mergeAccounts(settings: settings?.claudeAccounts ?? [],
+                                                      peer: await peerRead)
         resetAccountDefault()
         caps = await capsRead
         loaded = true

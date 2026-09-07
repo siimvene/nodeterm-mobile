@@ -64,6 +64,10 @@ public enum RpcMethod {
     /// Register a session the phone SPAWNED as a node on a project's canvas (§7.11.4). This is the
     /// one scoped workspace write the phone may make — `workspace:save` stays forbidden.
     public static let workspaceRegisterNode = "workspace:register-node"
+    /// Server Edition beside a desktop peer: the desktop's managed Claude accounts a spawn on that
+    /// server can run under (§7.11.3). Read-only; `E_NO_HANDLER` on a desktop / peer-less server
+    /// means "none", never an error.
+    public static let claudeAccountsPeerList = "claude-accounts:peer-list"
 
     // agent CLI capability probe (§7.11.3) — feature-detected flags, tolerant decode.
     public static let claudeCliCaps = "claude-cli:caps"

@@ -140,3 +140,18 @@ public func runNewSessionPlanTests() {
         Project.self, from: Data(#"{"id":"p2","name":"P","color":"gray","nodes":[]}"#.utf8))
     check(pNone.defaultAccountId == nil, "project defaultAccountId absent ⇒ nil")
 }
+
+// MARK: - mergeAccounts (SPEC §7.11.3): settings rows first, peer rows unioned by id
+
+public func runMergeAccountsTests() {
+    let a = ManagedAccount(id: "a", label: "A")
+    let aPeer = ManagedAccount(id: "a", label: "A (peer)", pending: true)
+    let b = ManagedAccount(id: "b", label: "B")
+    let c = ManagedAccount(id: "c", label: "C")
+    let merged = NewSessionPlan.mergeAccounts(settings: [a, b], peer: [c, aPeer, b])
+    check(merged.map(\.id) == ["a", "b", "c"], "settings first, peer appended, duplicates dropped")
+    check(merged[0].label == "A", "settings row wins over the peer row with the same id")
+    check(NewSessionPlan.mergeAccounts(settings: [], peer: [c]) == [c], "peer-only topology offers the peer rows")
+    check(NewSessionPlan.mergeAccounts(settings: [a], peer: []) == [a], "no peer ⇒ settings unchanged")
+    check(NewSessionPlan.mergeAccounts(settings: [], peer: []).isEmpty, "nothing ⇒ nothing")
+}
