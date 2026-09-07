@@ -5,9 +5,11 @@ real Kit once all module builders have landed. Grouped by file. Signatures are w
 *assumes*; if the Kit differs, fix the App call site (or, for the Factory concrete names, fix
 `Factory.swift` — the single place that names concrete types).
 
-Verified: the six Foundation-only App files (EmulatorInstruction, Osc52, PcmAudio,
-ServerWhisperTranscriber, SessionListModel, PresenceHello) were compiled + unit-checked against the
-real Kit in a macOS mini-package — 26/26 assertions pass. The iOS-only files (SwiftUI / SwiftTerm /
+Verified: the Foundation-only App files (EmulatorInstruction, Osc52, PcmAudio,
+ServerWhisperTranscriber, PresenceHello) were compiled + unit-checked against the real Kit in a macOS
+mini-package — 26/26 assertions pass. `SessionListModel` (+ `SessionRow`, `ProjectGroup`) has since
+MOVED into the Kit (`Sources/NodetermKit/Models/SessionListModel.swift`) so the HOME grouping rule is
+covered by `swift test`. The iOS-only files (SwiftUI / SwiftTerm /
 UIKit / Speech / AVFoundation) cannot be compiled on this machine; they were authored against the
 symbols below by reading the Kit sources.
 
@@ -21,7 +23,50 @@ symbols below by reading the Kit sources.
   `.webSocketURL`; conforms `Identifiable, Hashable, Codable, Sendable`.
 - `ConnectionState` — `.connected, .reconnecting, .authRequired, .offline` (RawRepresentable String).
 - `Workspace` — `version, activeProjectId, projects`; `init(version:activeProjectId:projects:)`.
-- `Project` — `id, name, color, cwd, ssh, nodes, closed, unavailable`; `.isSSH`; `init(...)`.
+- `Project` — `id, name, color, cwd, ssh, nodes, defaultPermissionMode, defaultAccountId, closed,
+  unavailable`; `.isSSH`; `init(...)`.
+- `Settings` — `claudePermissionMode, defaultShell, tmuxScrollback, claudeAccounts, codexAccounts`; Codable
+  (account lists decode PER ROW: one malformed row is skipped, the rest kept).
+- `ManagedAccount` — `id, label, email, pending, host`; `.isUsableHere`, `.displayName`; Codable, Identifiable.
+- `ClaudeCliCaps` — `autoPermissionMode, sessionIdFlag`; tolerant Codable (missing → false).
+- `NewSessionPlan` — `mintNodeId(now:random:)`, `launchCommand(agentId:permissionMode:caps:) -> String?`,
+  `resolvePermissionMode(projectMode:settingsMode:) -> String` (desktop's three layers: valid project
+  → valid setting → `auto`), `isPermissionMode(_:)`, `defaultPermissionMode`,
+  `registerPayload(id:title:agentId:accountId:) -> JSONValue`,
+  `derivedTitle(agentId:) -> String` (the canvas's own no-title label — `"Claude Code" / "Codex" /
+  "Gemini"`, else `"Mobile session"` — so the phone's synthetic row matches; SPEC §7.11),
+  `mergeAccounts(settings:peer:) -> [ManagedAccount]` (settings rows first, `claude-accounts:peer-list`
+  rows appended for unseen ids; `RpcMethod.claudeAccountsPeerList`, SPEC §7.11.3).
+- `RegistrationOutcome` — `.registered / .unsaved / .unknown`;
+  `decide(workspace:loadSucceeded:projectId:nodeId:)` — the §7.11.4 read-back table (a failed load,
+  a missing project, or `unavailable == true` ⇒ `.unknown`, never "not saved").
+- `LaunchRedelivery` — `.send / .alreadyRunning / .unknown`; `decide(paneCommand:)` — whether a launch
+  line may be RE-delivered (only into a bare shell; SPEC §7.11.3).
+- `SpawnRecord` — the §7.11 spawn state machine for one phone-spawned node (`Sources/NodetermKit/
+  Terminal/SpawnRecord.swift`); `init(projectId:payload:command:createFresh:now:)`,
+  `recording(existing:projectId:payload:command:createFresh:now:)` (an existing record is returned
+  unchanged — a rejoin can neither re-arm a launch nor re-open a settled registration; no record +
+  `createFresh:false` = lost first answer ⇒ launch owed but GATED), `launch` (`.none / .owed(command:
+  gated:) / .landed / .dropped`), `notBefore` + `markSettled(now:)` (the 1.5 s `silenceCap`, shortened
+  by the view's 200 ms-quiet observation), `launchStep(now:) -> Step` (`.nothing / .wait(until:) /
+  .deliver(command:checkPane:)`), `apply(delivery:)` (`.landed / .dropped / .deferred / .transient`),
+  `apply(registration:)`, `scheduleRedelivery() -> Bool` (true once; `redeliveryDelay` 3 s),
+  `scheduleDropReprobe() -> Bool` (true once; `reprobeDelay` 2 s — a FIRST `.dropped` re-probes
+  before concluding, so a transient rc-file child isn't misread as a busy pane),
+  `retryLaunch()` (re-arm a concluded `.dropped`, gated), `acknowledgeDrop()` (dismiss the banner),
+  `banner -> Banner?` (`.unsaved / .registrationUnknown / .launchUndelivered / .launchDropped`),
+  `launchCommand`, `launchOwed`, `registrationPending`, `needsDrive`, `isSettled`, `launchAttempts`,
+  `outcome`.
+- `SpawnTransportFault` — `.socketGone / .liveDeadline`; `classify(error:stillConnected:)` — splits a
+  live-socket `.timeout` (a counted attempt: `.deferred` delivery / proceed to read-back) from a gone
+  socket (`.disconnected`, or `.timeout` while offline ⇒ re-driven on reconnect; SPEC §7.11.3/4).
+- `SessionRow` — one HOME row (`serverId, serverName, projectId, projectName, nodeId, title, agentId,
+  cwd, accountId, projectCwd, sshRemoteTmux, status`); `.badge`, `.unread`, `.showsApproval`.
+- `ProjectGroup` — one HOME project card: `id` (= `serverId/projectId`), `serverId, projectId,
+  baseTitle, title, projectCwd, rows`; `ProjectGroup.key(serverId:projectId:)`.
+- `SessionListModel` — `rows(serverId:serverName:workspace:status:)`,
+  `groupedByProject(_:multiServer:) -> [ProjectGroup]` (keyed by (server, project), NOT by title;
+  colliding titles get a cwd-basename or ordinal suffix for display), `grouped(_:)`.
 - `CanvasNodeState` — `id, kind, title, color, cwd, agentId, accountId, parentId`; `init(...)`.
 - `NodeKind` — `.terminal, .sticky, .group, …`; `==`.
 - `CanvasMutation` — Codable (decoded from `canvas:mut` arg[1]).
@@ -46,8 +91,8 @@ symbols below by reading the Kit sources.
 - `SpeechTranscribeResult` — `text`; Codable.
 - `PeerKind` — `.phone` (uses `.wire`).
 - `NodetermWire` — `coAttachMouseSeq`, `shiftEnterSeq`.
-- `RpcMethod` — `workspaceLoad`, `agentAnswerPermission`, `agentAckDone`, `speechTranscribe`,
-  `speechModels`.
+- `RpcMethod` — `workspaceLoad`, `settingsLoad`, `workspaceRegisterNode`, `claudeCliCaps`,
+  `agentAnswerPermission`, `agentAckDone`, `speechTranscribe`, `speechModels`.
 - `RpcArg` — `.value(JSONValue)`, `.null`, `.omitted`; `init(_ value:)`.
 
 ## Protocols (Sources/NodetermKit/Contracts.swift)
@@ -70,8 +115,8 @@ symbols below by reading the Kit sources.
   `resize(sessionId:cols:rows:viewerId:)`, `park(sessionId:viewerId:)`, `kill(sessionId:viewerId:)`,
   `readScrollback(persistKey:) -> String`, `sendText(persistKey:text:enter:) -> Bool`,
   `capture(persistKey:full:) -> String`, `paneCommand(persistKey:) -> String?`,
-  `tmuxStatus() -> TmuxStatus`. (v0 UI uses create/write/resize/park/kill/readScrollback/sendText;
-  capture/paneCommand/tmuxStatus are available but not yet surfaced.)
+  `tmuxStatus() -> TmuxStatus`. (v0 UI uses create/write/resize/park/kill/readScrollback/sendText, and
+  paneCommand for a spawn launch RE-delivery check; capture/tmuxStatus are available but not yet surfaced.)
 - `SpeechTranscribing` — `transcribe(pcm:language:) -> String`, `availableModels() -> [SpeechModelInfo]`.
 
 ## Concrete types expected from the OTHER builders — named ONLY in `Factory.swift`
@@ -117,3 +162,16 @@ builders actually shipped; the real names/inits are below.
    fallback.
 6. `TmuxStatus` "tmux not found" banner (SPEC §11.5) is not yet surfaced in the UI (method wired in
    the protocol, no screen). Follow-up.
+
+## Known gaps — New Session flow (SPEC §7.11), deferred from the 2026-09-06 cross-vendor review
+
+7. **A re-auth replaces the `ServerRuntime`, and the in-memory spawn records go with it.** A spawn
+   still pending its launch or registration when the session is re-authenticated (a fresh runtime
+   is built) is forgotten: the session runs, but nobody types its launch or registers it, and no
+   banner says so. The records would need to persist per server (or survive the runtime swap) to
+   close this. Deferred: re-auth mid-spawn is a narrow window; the drive is otherwise re-run on
+   every reconnect.
+8. **`ClaudeCliCaps.sessionIdFlag` is probed and unused.** The desktop pins a Claude session id at
+   launch through `--session-id`; the phone's `register-node` payload carries no such field and the
+   launch line does not pass one, so a phone-spawned Claude session gets its id from the CLI. Wired
+   into the caps model for parity; the flag is honored once the register payload can carry it.

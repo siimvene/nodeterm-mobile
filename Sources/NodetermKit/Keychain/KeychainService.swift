@@ -24,7 +24,7 @@ public final class KeychainService: KeychainStoring {
 
     /// `serviceNamespace` defaults to the app's bundle-style prefix. Injectable so parallel test
     /// runs / multiple app targets don't collide in the shared login keychain.
-    public init(serviceNamespace: String = "com.nodeterm.mobile") {
+    public init(serviceNamespace: String = "ee.vene.termscape") {
         self.cookieService = "\(serviceNamespace).cookie"
         self.passwordService = "\(serviceNamespace).password"
     }

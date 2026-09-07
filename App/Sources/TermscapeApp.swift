@@ -6,7 +6,7 @@ import NodetermKit
 /// singletons and injects it. Foreground connects auto-connect servers; background disconnects
 /// (SPEC §8.4 — the socket is expected to die in background, §12 item 1).
 @main
-struct NodetermMobileApp: App {
+struct TermscapeApp: App {
     @StateObject private var environment: AppEnvironment
     @StateObject private var settings: AppSettings
     @Environment(\.scenePhase) private var scenePhase

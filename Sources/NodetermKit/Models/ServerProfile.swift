@@ -17,19 +17,59 @@ public struct ServerProfile: Codable, Sendable, Equatable, Identifiable, Hashabl
     public var rememberPassword: Bool
     /// Allow a plain-`http` localhost base (§2.1). Default false; MUST NOT be a "skip TLS" switch.
     public var insecureHTTP: Bool
+    /// Marks the synthetic **demo** profile (docs/DEMO-MODE.md). A demo server is driven by
+    /// `DemoFrameTransport` against `DemoScript` — no socket, no cookie — so it is NEVER persisted
+    /// to `ProfileStore` and NEVER writes the Keychain. Default false, and back-compatibly Codable:
+    /// a stored profile written before this field existed decodes with `isDemo == false` (the key
+    /// is optional on read), so the on-disk format is unchanged for real servers.
+    public var isDemo: Bool
 
     public init(id: String = UUID().uuidString,
                 name: String,
                 baseURL: URL,
                 autoConnect: Bool = true,
                 rememberPassword: Bool = false,
-                insecureHTTP: Bool = false) {
+                insecureHTTP: Bool = false,
+                isDemo: Bool = false) {
         self.id = id
         self.name = name
         self.baseURL = baseURL
         self.autoConnect = autoConnect
         self.rememberPassword = rememberPassword
         self.insecureHTTP = insecureHTTP
+        self.isDemo = isDemo
+    }
+
+    // Custom Codable that adds ONLY `isDemo` back-compatibly: a PRE-`isDemo` JSON payload still
+    // decodes because that one field is read via `decodeIfPresent` (defaulting to false). Every
+    // other field keeps the synthesized decoder's REQUIRED semantics — a record missing `id`,
+    // `name`, `baseURL`, or any of the three flags still fails to decode and is sidelined by
+    // `ServerProfileStore`, exactly as before this change. Encoding writes every field.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, baseURL, autoConnect, rememberPassword, insecureHTTP, isDemo
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        baseURL = try c.decode(URL.self, forKey: .baseURL)
+        autoConnect = try c.decode(Bool.self, forKey: .autoConnect)
+        rememberPassword = try c.decode(Bool.self, forKey: .rememberPassword)
+        insecureHTTP = try c.decode(Bool.self, forKey: .insecureHTTP)
+        // The one genuinely new field: absent in pre-rebrand records ⇒ false, not a decode failure.
+        isDemo = try c.decodeIfPresent(Bool.self, forKey: .isDemo) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(baseURL, forKey: .baseURL)
+        try c.encode(autoConnect, forKey: .autoConnect)
+        try c.encode(rememberPassword, forKey: .rememberPassword)
+        try c.encode(insecureHTTP, forKey: .insecureHTTP)
+        try c.encode(isDemo, forKey: .isDemo)
     }
 }
 

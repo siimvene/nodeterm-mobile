@@ -64,10 +64,12 @@ public actor RpcClient: RpcClienting {
         makeTransport: @escaping @Sendable () -> FrameTransporting,
         sleeper: @escaping @Sendable (_ ms: Int) async -> Void = { ms in
             try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
-        }
+        },
+        requestTimeoutNs: UInt64 = RpcClient.defaultRequestTimeoutNs
     ) {
         self.makeTransport = makeTransport
         self.sleeper = sleeper
+        self.requestTimeoutNs = requestTimeoutNs
     }
 
     // MARK: RpcClienting — lifecycle
@@ -116,6 +118,7 @@ public actor RpcClient: RpcClienting {
         // Timeout + caller-cancellation cleanup (consort finding): a server that withholds a
         // response must not pin the continuation (and whatever awaits it) in `pending` forever,
         // and a cancelled caller must release its slot instead of leaking until socket close.
+        let timeoutNs = requestTimeoutNs
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSONValue, Error>) in
                 // Runs synchronously under actor isolation: register BEFORE the send hop so a close
@@ -123,21 +126,29 @@ public actor RpcClient: RpcClienting {
                 pending[id] = cont
                 Task { [weak self] in await self?.deliver(id: id, text: framedText) }
                 Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: RpcClient.requestTimeoutNs)
-                    await self?.expirePending(id: id)
+                    try? await Task.sleep(nanoseconds: timeoutNs)
+                    await self?.expirePending(id: id, as: .timeout)
                 }
             }
         } onCancel: {
-            Task { [weak self] in await self?.expirePending(id: id) }
+            Task { [weak self] in await self?.expirePending(id: id, as: .disconnected) }
         }
     }
 
     /// 60 s: generous for slow hosts, finite for dead ones. Fires only if the id is still pending.
-    static let requestTimeoutNs: UInt64 = 60_000_000_000
+    public static let defaultRequestTimeoutNs: UInt64 = 60_000_000_000
+    /// Per-instance deadline (injectable so a test can observe the expiry without real time).
+    private let requestTimeoutNs: UInt64
 
-    private func expirePending(id: Int) {
+    /// Resume a still-pending id with `reason`. The DEADLINE path throws `.timeout` — the socket is
+    /// (as far as this client knows) still up and the request DID reach the server, so a caller that
+    /// classifies transport faults (`SpawnTransportFault`) can tell a live-socket deadline from a
+    /// gone socket; mapping both to `.disconnected` made that classification unreachable (consort
+    /// finding). Caller cancellation keeps `.disconnected`: nothing is known about the request, and
+    /// every caller already treats that as "never answered".
+    private func expirePending(id: Int, as reason: RpcError) {
         guard let cont = pending.removeValue(forKey: id) else { return }
-        cont.resume(throwing: RpcError.disconnected)
+        cont.resume(throwing: reason)
     }
 
     public func cast(_ method: String, _ args: [RpcArg]) async {

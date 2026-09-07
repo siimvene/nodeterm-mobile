@@ -51,17 +51,24 @@ public enum SeedPaint {
     /// - Parameter isReconnect: true when this create is the reconnect re-issue (SPEC §4.8 step 3):
     ///   the native emulator still holds pre-drop content, so we reset first and treat `screen` as
     ///   a resync capture. On a first attach this is false.
+    /// - Parameter spawning: true when the PHONE is spawning this session (SPEC §7.11.2): the fresh
+    ///   branch minus the scrollback replay and the cold-start separator — nothing was restored, so
+    ///   the restore marker would be a lie. Ignored for a warm join.
     public static func plan(result: PtyCreateResult,
                             scrollback: String?,
-                            isReconnect: Bool) -> [EmulatorInstruction] {
+                            isReconnect: Bool,
+                            spawning: Bool = false) -> [EmulatorInstruction] {
         var out: [EmulatorInstruction] = []
         if isReconnect { out.append(.reset) }
 
         if result.fresh {
             // Cold start (SPEC §7.2 step 2): tmux server died. Replay the persisted snapshot; do
-            // NOT auto-resume the agent CLI (owner concern).
-            if let sb = scrollback, !sb.isEmpty { out.append(.paintCapture(sb)) }
-            out.append(.coldStartSeparator)
+            // NOT auto-resume the agent CLI (owner concern). A phone SPAWN (SPEC §7.11.2) is fresh
+            // too but nothing was restored: no replay, no separator.
+            if !spawning {
+                if let sb = scrollback, !sb.isEmpty { out.append(.paintCapture(sb)) }
+                out.append(.coldStartSeparator)
+            }
         } else if let screen = result.screen, !screen.isEmpty {
             // Warm join, our grid ≥ pty grid: no redraw coming, paint `screen` first (step 3).
             out.append(.paintCapture(screen))

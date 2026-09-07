@@ -1,7 +1,7 @@
 import Foundation
 
 /// Account rate-limit usage forwarded from the desktop's status mirror over the `usage:update`
-/// WS event (server: peer-status-bridge). The phone renders these in Settings → Usage; it never
+/// WS event (server: peer-status-bridge). The phone renders these on the Home dashboard's Usage section; it never
 /// computes them — the numbers are the desktop usage service's own snapshots.
 ///
 /// Tolerant decoding throughout (unknown fields ignored, absent optionals nil): the mirror is
@@ -59,8 +59,11 @@ public struct AccountUsage: Codable, Sendable, Equatable, Identifiable {
         self.agentId = agentId; self.status = status; self.updatedAt = updatedAt; self.limits = limits
     }
 
-    /// Row id: the account id, or a stable token for the (single) system row.
-    public var id: String { accountId ?? "system:\(agentId)" }
+    /// Row id: `<agentId>:<accountId>` for a managed account, `system:<agentId>` for that agent's
+    /// system row. The agent is part of the key on purpose: Claude and Codex managed-account ids
+    /// come from independent id spaces (both randomUUID on the desktop), so `accountId` alone is
+    /// not a key — a collision would make one row overwrite the other in a keyed list.
+    public var id: String { accountId.map { "\(agentId):\($0)" } ?? "system:\(agentId)" }
 
     /// Best display name: label → email → a generic fallback.
     public var displayName: String {

@@ -1,0 +1,159 @@
+name: iOS Release (App Store Connect)
+
+# Manual trigger only — each run consumes paid private-repo macOS minutes and
+# uploads a build to App Store Connect, so it must never fire on a push.
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Optional note for this run"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "ios-release-*"
+
+permissions:
+  contents: read
+
+jobs:
+  archive-and-upload:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      # Team ID is an identifier, not a secret (it ships in every build).
+      TEAM_ID: D7HDY2ST3C
+      KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select a released Xcode 26 (build machine must NOT be beta)
+        run: |
+          set -euo pipefail
+          echo "Available Xcodes:"; ls -d /Applications/Xcode*.app || true
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$XC" ]; then
+            echo "::error::No Xcode 26.x on this runner. Bump runs-on to a newer macOS image."
+            exit 1
+          fi
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+          echo "SDKs:"; xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: Generate the Xcode project (XcodeGen; .xcodeproj is gitignored)
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen generate
+          ls -d Termscape.xcodeproj
+
+      - name: Ensure Metal toolchain (archive fails without it on Xcode 26)
+        run: |
+          set -euo pipefail
+          if xcrun -f metal >/dev/null 2>&1; then
+            echo "Metal toolchain already present ($(xcrun -f metal))"
+          else
+            echo "Metal toolchain missing; downloading..."
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: Write App Store Connect API key from secret
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.private_keys
+          echo "${{ secrets.ASC_KEY_P8_B64 }}" | base64 --decode > "$HOME/.private_keys/AuthKey_${KEY_ID}.p8"
+          chmod 600 "$HOME/.private_keys/AuthKey_${KEY_ID}.p8"
+
+      - name: Archive (cloud-signed via ASC API key)
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project Termscape.xcodeproj \
+            -scheme Termscape \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Termscape.xcarchive \
+            -allowProvisioningUpdates \
+            DEVELOPMENT_TEAM="${TEAM_ID}" \
+            -authenticationKeyPath "$HOME/.private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyID "${KEY_ID}" \
+            -authenticationKeyIssuerID "${ISSUER_ID}"
+
+      - name: Export IPA (method app-store-connect)
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath build/Termscape.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist ci_scripts/ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/.private_keys/AuthKey_${KEY_ID}.p8" \
+            -authenticationKeyID "${KEY_ID}" \
+            -authenticationKeyIssuerID "${ISSUER_ID}"
+          ls -la build/export
+
+      - name: Upload to App Store Connect
+        run: |
+          set -euo pipefail
+          # altool EXITS 0 ON A REJECTED DELIVERY. On 2026-09-03 it printed "UPLOAD FAILED with 2
+          # errors" (the 0.0.1 pre-release train was closed, and CFBundleShortVersionString was not
+          # higher than the already-approved version) and this step still went green — so builds 4
+          # and 5 were reported as shipped when App Store Connect never received either one. Its
+          # exit code is not evidence; its output is.
+          #
+          # Both directions are asserted, and both strings are taken from real runs: the successful
+          # upload of build 3 printed "UPLOAD SUCCEEDED with no errors" plus a Delivery UUID, and
+          # the failed upload of build 5 printed "UPLOAD FAILED with 2 errors".
+          set +e
+          xcrun altool --upload-app --type ios \
+            --file "build/export/Termscape.ipa" \
+            --apiKey "${KEY_ID}" \
+            --apiIssuer "${ISSUER_ID}" 2>&1 | tee upload.log
+          # BOTH halves of the pipe: a tee that cannot write would otherwise lose the log this
+          # whole check reads, and a silently truncated log is exactly the failure mode being
+          # fixed here (consort finding).
+          #
+          # Copy the WHOLE array in one assignment. PIPESTATUS is rebuilt by the next command, so
+          # `rc=${PIPESTATUS[0]}` already destroys it and the following `${PIPESTATUS[1]}` reads an
+          # unbound element — which under `set -u` aborts the step. That failed the 1.0.0 build 6
+          # run AFTER altool had uploaded successfully: a green delivery reported as a failure, the
+          # mirror image of the bug this step exists to catch.
+          pipe=("${PIPESTATUS[@]}")
+          set -e
+          rc=${pipe[0]:-1}
+          teerc=${pipe[1]:-1}
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::altool exited ${rc}"
+            exit 1
+          fi
+          if [ "$teerc" -ne 0 ]; then
+            echo "::error::tee exited ${teerc}; upload.log cannot be trusted"
+            exit 1
+          fi
+          if grep -qiE "UPLOAD FAILED|Failed to upload package|ERROR: \[altool" upload.log; then
+            echo "::error::altool reported a failed delivery while exiting 0 — see the log above"
+            exit 1
+          fi
+          # Both halves of a real success. "UPLOAD SUCCEEDED" alone is an unanchored substring and
+          # could in principle appear in mixed or future output; a delivery that actually reached
+          # Apple also prints a Delivery UUID (verified in the build 3 run). Requiring both closes
+          # the theoretical false-pass (consort finding).
+          if ! grep -qi "UPLOAD SUCCEEDED" upload.log || ! grep -qi "Delivery UUID:" upload.log; then
+            echo "::error::altool did not print both UPLOAD SUCCEEDED and a Delivery UUID; refusing to call this a shipped build"
+            exit 1
+          fi
+
+      - name: Save archive + ipa as run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: termscape-ios
+          path: |
+            build/export/*.ipa
+            build/Termscape.xcarchive
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Cleanup key
+        if: always()
+        run: rm -f "$HOME/.private_keys/AuthKey_${KEY_ID}.p8"

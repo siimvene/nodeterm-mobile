@@ -19,18 +19,41 @@ public final class TerminalSessionVM: ObservableObject {
     let row: SessionRow
     public let handle = TerminalHandle()
 
+    /// Set ONLY for a session the phone SPAWNED (SPEC §7.11): after the fresh spawn settles, the VM
+    /// delivers this launch line and registers the node. nil for an ordinary co-attach.
+    private let pendingLaunch: PendingLaunch?
+
     // Captured once from the runtime so detached Tasks capture Sendable values, never read
     // @MainActor properties off-actor.
     private let rpc: RpcClienting
     private let control: TerminalSessionControlling
 
-    /// Unique within THIS connection (SPEC §7.1). Reused on reconnect re-attach.
-    private let viewerId = UUID().uuidString
+    /// Unique within THIS connection (SPEC §7.1). Reused on reconnect re-attach, REGENERATED for a
+    /// fresh appearance: `onDisappear` queues its kill on the outbound chain while a new `join`'s
+    /// `pty:create` takes the independent request path, so with one immutable id the old kill can
+    /// land after the new create and detach the viewer that just attached.
+    private var viewerId = UUID().uuidString
 
     @Published public private(set) var phase: Phase = .connecting
     @Published public private(set) var sessionId: String = ""
     @Published public var ctrlLatched = false
     @Published public private(set) var persistent: Bool? = nil
+    /// `pty:create` answered `accountFallback`: the node's managed account had no config dir at
+    /// spawn, so the session runs as the host's System account. The node KEEPS its `accountId`
+    /// (desktop parity: the account chip is flagged, the node is not rewritten). Shown as a
+    /// dismissible banner (consort finding: the flag was decoded and dropped on the floor).
+    @Published public private(set) var accountFellBack = false
+
+    /// This VM's settle-wait + first drive runs exactly ONCE (on the initial spawn). The spawn record
+    /// itself lives on the RUNTIME (`ServerRuntime.recordSpawn` → `NodetermKit.SpawnRecord`), which
+    /// decides from RECORD state whether a launch is still owed and re-drives on every reconnect until
+    /// settled — so a reconnect rejoin here has nothing to decide, only to record (a no-op on an
+    /// existing record).
+    private var didRunPendingLaunch = false
+    /// Shell-settle tracking for the launch line (SPEC §7.11.3): first-output seen + last-activity,
+    /// fed from the SAME `pty:data` subscription the emulator uses (see `subscribeStreams`).
+    private var launchSawFirstOutput = false
+    private var launchLastActivity = Date()
 
     private var tasks: [Task<Void, Never>] = []
     /// The in-flight join (pty:create) — tracked so onDisappear can cancel it, and so a create
@@ -39,6 +62,11 @@ public final class TerminalSessionVM: ObservableObject {
     private var joinTask: Task<Void, Never>?
     /// Set by onDisappear; a join that resolves afterwards must register nothing (SPEC §7.4).
     private var tornDown = false
+    /// TRUE between onAppear and onDisappear: this VM already holds a live attach (join in flight
+    /// or streams subscribed). SwiftUI can fire `.onAppear` again WITHOUT a matching
+    /// `.onDisappear` — dismissing a sheet (dictation, transcript) does exactly that — and a
+    /// second join would leave the first one's subscriptions running (see `onAppear`).
+    private var attached = false
     private var lastCols = 0
     private var lastRows = 0
     private var didCreate = false
@@ -47,6 +75,11 @@ public final class TerminalSessionVM: ObservableObject {
     /// failure still retries on the next reconnect (consort finding #13).
     private var permanentlyClosed = false
     private var attemptedJoin = false
+    /// Bumped by every attach trigger (a fresh appearance, a reconnect rejoin). `join` carries the
+    /// generation it started under and abandons itself after any `await` that a newer attach won:
+    /// two joins in flight is not hypothetical (see `observeReconnect`), and the loser must not
+    /// paint a stale seed, subscribe, or cancel the winner's streams on its way out.
+    private var attachGeneration = 0
     /// Outbound op chain (consort finding): writes/resizes/park/kill each used to spawn an
     /// independent Task, and unstructured tasks carry no ordering guarantee — rapid keystrokes
     /// could reach the actor out of order. Every outbound op now appends to ONE chain.
@@ -61,9 +94,10 @@ public final class TerminalSessionVM: ObservableObject {
     }
     private var connectionObserver: Task<Void, Never>?
 
-    public init(runtime: ServerRuntime, row: SessionRow) {
+    public init(runtime: ServerRuntime, row: SessionRow, pendingLaunch: PendingLaunch? = nil) {
         self.runtime = runtime
         self.row = row
+        self.pendingLaunch = pendingLaunch
         self.rpc = runtime.rpcClient
         self.control = runtime.terminal
     }
@@ -82,18 +116,57 @@ public final class TerminalSessionVM: ObservableObject {
     public func onAppear(initialCols: Int, initialRows: Int) {
         runtime.onScreenNodeId = row.nodeId
         Task { await runtime.markViewed(nodeId: row.nodeId) }   // clears unread + acks done (§6.3 #8)
-        lastCols = max(initialCols, 1); lastRows = max(initialRows, 1)
+        // A RE-APPEAR IS NOT A NEW ATTACH. SwiftUI fires `.onAppear` on the presenter again when a
+        // sheet is dismissed, with no `.onDisappear` in between, so the previous attach is still
+        // fully live. Joining twice leaves TWO `pty:data` subscriptions feeding ONE emulator
+        // (`RpcClient.ptyData` fans out per subscriber, it does not share one stream): every byte
+        // is painted twice (typing `claude` shows `ccllaauuddee` while the pty still receives one
+        // copy, so the command runs), and every DA / DSR / XTWINOPS query is answered twice — the
+        // second reply nobody is reading lands on the shell prompt as literal text
+        // (`zsh: command not found: 47`).
+        //
+        // Do NOTHING on a duplicate: `initialCols/Rows` is the GeometryReader's crude estimate,
+        // and the emulator has since refined `lastCols/lastRows` through `sizeChanged`. Writing
+        // the estimate back and force-reporting it would shrink the pty for every co-attached
+        // viewer (the pty runs at the min of the ledger).
+        guard !attached else { return }
+        attached = true
         tornDown = false
+        lastCols = max(initialCols, 1); lastRows = max(initialRows, 1)
+        viewerId = UUID().uuidString
+        // The previous appearance's session id is not ours: until the new `pty:create` answers,
+        // a `reportSize`/`park`/`write` would address (old session, new viewer). Everything on
+        // those paths early-returns on an empty id, so clearing is the whole fix.
+        sessionId = ""
+        attachGeneration += 1
+        let gen = attachGeneration
         observeReconnect()
-        joinTask = Task { await join(isReconnect: false) }
+        joinTask = Task { await join(isReconnect: false, gen: gen) }
     }
 
     /// Called on view disappear: kill ONLY this viewer (SPEC §7.4).
     public func onDisappear() {
         if runtime.onScreenNodeId == row.nodeId { runtime.onScreenNodeId = nil }
         tornDown = true
+        attached = false
+        // Teardown is an attach transition like any other. Without this bump a join suspended in
+        // `readScrollback` resumes with a generation that still matches, then paints, subscribes
+        // and re-reports size for a view that is gone — live streams off-screen and a killed
+        // viewer back in the size ledger.
+        attachGeneration += 1
         connectionObserver?.cancel(); connectionObserver = nil
-        joinTask?.cancel(); joinTask = nil
+        // A `pty:create` that is THE SPAWN (SPEC §7.11: a launch is pending and no record exists yet)
+        // must be allowed to finish: cancelling it resumes the request with `.disconnected` while
+        // the server goes on creating the session, so it would exist with nobody to type its launch
+        // or register it — the exact failure §7.11 warns about, reached by dismissing the screen
+        // during the create (consort finding). Left to run, the answer lands in `join`'s
+        // generation / `tornDown` branch, which kills this viewer AND hands the session to the
+        // runtime (`recordSpawnOffScreen`). Any other in-flight join is cancelled as before.
+        if spawnCreateInFlight {
+            joinTask = nil
+        } else {
+            joinTask?.cancel(); joinTask = nil
+        }
         tasks.forEach { $0.cancel() }; tasks.removeAll()
         let sid = sessionId, vid = viewerId
         if !sid.isEmpty {
@@ -102,6 +175,15 @@ public final class TerminalSessionVM: ObservableObject {
         // A create still in flight is handled by join()'s post-create check: it sends the kill
         // itself once the sessionId is known (SPEC §7.4).
     }
+
+    /// The join in flight is the spawn's own `pty:create`: a launch is pending for this node and no
+    /// `pty:create` has ever answered for it (no spawn record on the runtime yet).
+    private var spawnCreateInFlight: Bool {
+        joinTask != nil && pendingLaunch != nil && !runtime.hasSpawnRecord(nodeId: persistKey)
+    }
+
+    /// Hide the account-fallback banner (the session keeps running as the System account).
+    public func dismissAccountFallback() { accountFellBack = false }
 
     /// App → background OR view off-screen kept warm (SPEC §7.3): PARK, do not kill.
     public func park() {
@@ -117,12 +199,15 @@ public final class TerminalSessionVM: ObservableObject {
 
     // MARK: Join / seed paint (SPEC §7.1/§7.2)
 
-    private func join(isReconnect: Bool) async {
+    private func join(isReconnect: Bool, gen: Int) async {
         attemptedJoin = true
         guard !permanentlyClosed else { return }
+        // The id THIS create registers. Read once: a fresh appearance mints a new one, so reading
+        // `viewerId` again after the await could clean up (or kill) the wrong viewer.
+        let vid = viewerId
         let options = PtyCreateOptions(
             cols: lastCols, rows: lastRows,
-            persistKey: persistKey, viewerId: viewerId,
+            persistKey: persistKey, viewerId: vid,
             // Project-cwd fallback (consort finding): a cold spawn of a cwd-less node must land
             // in the project folder, not the server's $HOME — under the REAL persistent node id.
             cwd: row.cwd ?? row.projectCwd, ownerProjectId: row.projectId,
@@ -133,50 +218,171 @@ public final class TerminalSessionVM: ObservableObject {
 
         let result: PtyCreateResult
         do { result = try await control.create(options) } catch {
+            guard gen == attachGeneration else { return }
             phase = .unavailable("Couldn't attach"); return
+        }
+        // A newer attach (or a teardown) took over while `pty:create` was in flight. The create
+        // still REGISTERED this viewer server-side and nobody else will ever detach it: a
+        // teardown could not (our `sessionId` was still empty when it ran) and a fresh appearance
+        // holds a DIFFERENT id. Kill it here or it sits in the size ledger clamping every
+        // co-attached viewer's grid. Only when the id differs from the one now in force — a
+        // RECONNECT loser reuses the same id, and killing that would detach the winner.
+        guard gen == attachGeneration else {
+            let sid = result.sessionId
+            if !sid.isEmpty, vid != viewerId {
+                enqueueOutbound { [control] in await control.kill(sessionId: sid, viewerId: vid) }
+            }
+            // Lost the race, but the SESSION now exists and is ours (SPEC §7.11): hand it to the
+            // runtime so it still gets its launch line and registration, view or no view.
+            recordSpawnOffScreen(result, isReconnect: isReconnect)
+            return
         }
 
         // Refusals come back IN-BAND, not as errors (SPEC §5.1/§7.2 step 1).
-        if let closed = result.closed { phase = .closed(by: closed.by); return }
+        // As permanent as the `pty:closed` event: the session is GONE, so a later reconnect must
+        // not re-issue `pty:create` and spawn an unintended replacement. In-band `unavailable`
+        // stays retryable — that one is about WHERE the session can run, not whether it exists.
+        if let closed = result.closed {
+            permanentlyClosed = true
+            phase = .closed(by: closed.by); return
+        }
         if let reason = result.unavailable { phase = .unavailable(reason); return }
 
         // The view was dismissed while pty:create was in flight: the viewer WAS registered
         // server-side, so kill it immediately instead of wiring streams for a dead VM (SPEC §7.4).
         if tornDown {
-            let vid = viewerId
             let sid = result.sessionId
             if !sid.isEmpty { enqueueOutbound { [control] in await control.kill(sessionId: sid, viewerId: vid) } }
+            // Dismissed mid-create, but the SESSION now exists and is ours (SPEC §7.11): a
+            // spawned-but-unregistered session is the failure the spec warns about, so the runtime
+            // — not this dying VM — still delivers the launch and registers it.
+            recordSpawnOffScreen(result, isReconnect: isReconnect)
             return
         }
 
         sessionId = result.sessionId
         persistent = result.persistent
         guard !sessionId.isEmpty else { phase = .unavailable("No session"); return }
+        if result.accountFellBack { accountFellBack = true }
 
-        // Cold start (SPEC §7.2 step 2): fetch the persisted snapshot for replay.
+        // Cold start (SPEC §7.2 step 2): fetch the persisted snapshot for replay. NOT for a session
+        // the phone is spawning right now (SPEC §7.11.2 — the fresh branch MINUS the scrollback read
+        // and its restore separator: a session created one moment ago has no snapshot and was not
+        // restored). The skip is load-bearing: `RpcClient.ptyData` replays the early buffer only to
+        // the FIRST subscriber, so the emulator (and the launch-settle tracker it feeds) must
+        // subscribe before the round trip would let the shell's first output slip past.
+        //
+        // "Spawning" is decided from RECORD state, not `!isReconnect`: this is the spawn exactly when
+        // no `pty:create` has EVER answered for this node (no spawn record yet), so THIS fresh answer
+        // is the create. When the first `pty:create` was lost and the reconnect rejoin answers
+        // `fresh:true`, `!isReconnect` was false and painted the cold-start restore separator on a
+        // brand-new spawn; keying off the absent record treats it correctly as the spawn. A genuine
+        // reconnect of an already-recorded session (its tmux died, answered `fresh:true`) still has a
+        // record, so `spawning` is false and it takes the ordinary cold-start path.
+        let spawning = pendingLaunch != nil && !runtime.hasSpawnRecord(nodeId: persistKey)
         var scrollback: String? = nil
-        if result.fresh {
+        if result.fresh && !spawning {
             scrollback = try? await control.readScrollback(persistKey: persistKey)
+            guard gen == attachGeneration else { return }
         }
 
-        handle.apply(SeedPaint.plan(result: result, scrollback: scrollback, isReconnect: isReconnect))
+        handle.apply(SeedPaint.plan(result: result, scrollback: scrollback, isReconnect: isReconnect,
+                                    spawning: spawning))
 
         subscribeStreams()
         reportSize(cols: lastCols, rows: lastRows, force: true)   // §7.3 initial local fit
         phase = .ready
         didCreate = true
+
+        // SPEC §7.11: the phone spawned this session. Record it on the RUNTIME first (a no-op on an
+        // existing record; the record survives this VM), then — once, for this VM — watch the shell
+        // settle and drive the launch line + registration. Whether a launch is OWED is the record's
+        // call (`fresh:false` on a node with no record is a lost first answer, still owed but gated),
+        // never `isReconnect`'s. The Task is deliberately outside `tasks` so a quick dismiss cannot
+        // cancel it; and even if it were, the runtime re-drives on reconnect.
+        if let launch = pendingLaunch {
+            runtime.recordSpawn(nodeId: persistKey, projectId: row.projectId,
+                                launch: launch, createFresh: result.fresh)
+            if !didRunPendingLaunch {
+                didRunPendingLaunch = true
+                Task { await self.settleThenDrive(waitForShell: launch.command != nil) }
+            }
+        }
+    }
+
+    // MARK: Spawn: shell settle → runtime drive (SPEC §7.11.3 / §7.11.4)
+
+    /// A create that resolved for a view that is gone (or lost its attach race) still spawned OUR
+    /// session: record it on the runtime and drive it. There is no emulator subscription left to
+    /// watch the pane's first output from, so nobody marks the record settled early and the drive
+    /// waits out the record's own 1.5 s silence cap (`SpawnRecord.notBefore`).
+    private func recordSpawnOffScreen(_ result: PtyCreateResult, isReconnect: Bool) {
+        guard let launch = pendingLaunch, result.closed == nil, result.unavailable == nil,
+              !result.sessionId.isEmpty else { return }
+        let nodeId = persistKey
+        runtime.recordSpawn(nodeId: nodeId, projectId: row.projectId,
+                            launch: launch, createFresh: result.fresh)
+        let runtime = self.runtime
+        Task { await runtime.driveSpawn(nodeId: nodeId) }
+    }
+
+    /// Watch the shell settle (200 ms quiet after first output, 1.5 s silence cap — SPEC §7.11.3),
+    /// tell the record so the launch may go NOW rather than at the cap, then drive. The wait is
+    /// enforced on the record, so a concurrent driver (an `onConnected` re-drive, a race loser) can
+    /// never type the launch before this observation — or the cap — has passed.
+    private func settleThenDrive(waitForShell: Bool) async {
+        if waitForShell { await awaitShellSettle() }
+        runtime.markSpawnSettled(nodeId: persistKey)
+        await runtime.driveSpawn(nodeId: persistKey)
+    }
+
+    /// Deliver the launch line only after the fresh shell settles (SPEC §7.11.3): a line written
+    /// into zsh's rc-file tty flush comes out mangled. Wait for 200 ms of quiet after the FIRST
+    /// output, with a 1.5 s cap on total silence (no output at all → write anyway). Activity is
+    /// noted by the emulator's own `pty:data` subscription (`subscribeStreams`), which is the first
+    /// subscriber and therefore the one that sees the replayed early bytes — a second, later
+    /// subscription would miss the shell's first output and always fall to the 1.5 s cap.
+    private func awaitShellSettle() async {
+        launchSawFirstOutput = false
+        launchLastActivity = Date()
+        let start = Date()
+        while true {
+            try? await Task.sleep(for: .milliseconds(40))
+            let now = Date()
+            if !launchSawFirstOutput {
+                if now.timeIntervalSince(start) >= 1.5 { break }             // silence cap
+            } else if now.timeIntervalSince(launchLastActivity) >= 0.2 {
+                break                                                        // 200 ms quiet after output
+            }
+        }
+    }
+
+    private func noteLaunchActivity() {
+        launchSawFirstOutput = true
+        launchLastActivity = Date()
     }
 
     // MARK: Event streams (SPEC §6.1/§7.5/§7.8)
 
     private func subscribeStreams() {
+        // Belt and braces under the generation check, not instead of it. This is the LAST step of
+        // every join path, so clearing here means the VM cannot hold two `pty:data` subscriptions
+        // even if some future path reaches a join without a generation. (The VM is `@MainActor` and
+        // this function has no suspension point, so nothing can append between the clear and the
+        // appends below.) A cancelled stream task drops its next element instead of feeding it.
+        tasks.forEach { $0.cancel() }
+        tasks.removeAll()
         let sid = sessionId
-        // Live output (binary → decoded) — feed verbatim.
-        tasks.append(Task { [handle, rpc] in
+        // Live output (binary → decoded) — feed verbatim. For a session the phone is SPAWNING this
+        // same subscription also feeds the launch-settle tracker (SPEC §7.11.3): it is the FIRST
+        // `pty:data` subscriber, so it is the one that receives the replayed early buffer.
+        let tracksLaunch = pendingLaunch != nil
+        tasks.append(Task { [weak self, handle, rpc] in
             let stream = await rpc.ptyData(for: sid)
             for await data in stream {
                 if Task.isCancelled { break }
                 await handle.apply([.feedRaw(data)])
+                if tracksLaunch { await self?.noteLaunchActivity() }
             }
         })
         subscribeEv("pty:size:\(sid)") { [weak self] args in
@@ -226,15 +432,29 @@ public final class TerminalSessionVM: ObservableObject {
     // MARK: Reconnect (SPEC §4.8 step 3)
 
     private func observeReconnect() {
+        // Assigning over a live observer would leak it: the old Task keeps running and fires its
+        // own `rejoin()` alongside the new one's.
+        connectionObserver?.cancel()
         connectionObserver = Task { [weak self, rpc] in
             let states = await rpc.connectionStates()
+            // `connectionStates()` hands a FRESH observer the current state immediately — the first
+            // value is a snapshot, not a transition. Acting on it fired `rejoin()` on top of the
+            // very join `onAppear` had just started (`join` sets `attemptedJoin` before its first
+            // await, so the flag is already true by the time the snapshot arrives): two concurrent
+            // `pty:create`s on every single open, and — before `subscribeStreams` learned to clear
+            // — two live `pty:data` subscriptions painting every byte twice. Only a RECONNECT, a
+            // `.connected` that FOLLOWS a non-connected state, is a reason to re-attach.
+            var sawDisconnect = false
             for await state in states {
                 if Task.isCancelled { break }
                 guard let self else { break }
+                guard state == .connected else { sawDisconnect = true; continue }
+                guard sawDisconnect else { continue }
+                sawDisconnect = false
                 // Retry on reconnect whenever an attach was ATTEMPTED and the session is not
                 // known-dead — a transient initial-create failure must heal on the next socket,
                 // not stay "Couldn't attach" until remount (consort finding #13).
-                if state == .connected, await self.shouldRejoinFlag {
+                if await self.shouldRejoinFlag {
                     await self.rejoin()   // re-issue pty:create, reset-before-paint (SPEC §4.8 step 3)
                 }
             }
@@ -246,9 +466,11 @@ public final class TerminalSessionVM: ObservableObject {
     private var shouldRejoinFlag: Bool { attemptedJoin && !permanentlyClosed }
 
     private func rejoin() async {
-        guard !tornDown else { return }
+        guard !tornDown, attached else { return }
+        attachGeneration += 1
+        let gen = attachGeneration
         tasks.forEach { $0.cancel() }; tasks.removeAll()
-        await join(isReconnect: true)
+        await join(isReconnect: true, gen: gen)
     }
 
     // MARK: Input (SPEC §7.6)
