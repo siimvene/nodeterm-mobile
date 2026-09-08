@@ -327,7 +327,7 @@ struct SessionRowView: View {
                         .font(.caption).foregroundStyle(Theme.textSecondary)
                     }
                     Spacer()
-                    BadgeView(badge: row.badge)
+                    BadgeView(badge: row.badge, unread: row.unread)
                 }
                 if row.showsApproval { approvalButtons }
             }
@@ -360,14 +360,25 @@ struct SessionRowView: View {
 /// every project header. Green + a checkmark reads as "finished" without a legend.
 struct BadgeView: View {
     let badge: AgentBadge
+    /// The row is unread — a finish/pause the user has not opened yet. A NEW NEEDS YOU pulses; one
+    /// already viewed sits still. That is the "new vs already-seen" distinction the removed unread
+    /// dot used to carry, now on the badge itself so it never re-reads as a project-header dot.
+    var unread: Bool = false
 
-    var body: some View {
+    @ViewBuilder var body: some View {
         switch badge {
         case .running:
             label("RUNNING", color: Theme.running)
                 .modifier(Pulse(period: 0.9))
         case .needsYou:
-            label("NEEDS YOU", color: Theme.needsYou)
+            // Conditional modifier, not a Pulse flag: when `unread` clears, the Pulse subtree is
+            // torn down and the label goes static — a `@State`-carrying Pulse would keep animating.
+            if unread {
+                label("NEEDS YOU", color: Theme.needsYou)
+                    .modifier(Pulse(period: 1.6))
+            } else {
+                label("NEEDS YOU", color: Theme.needsYou)
+            }
         case .done:
             label("DONE", color: Theme.running, icon: "checkmark")
                 .modifier(Pulse(period: 1.6))
@@ -400,6 +411,10 @@ private struct Pulse: ViewModifier {
             .onAppear {
                 withAnimation(.easeInOut(duration: period).repeatForever(autoreverses: true)) { dim = true }
             }
+            // A view that disappears keeps its `@State`, so `dim` stayed true and a later onAppear
+            // set an already-true value — no animation, badge stuck at 55%. Reset on disappear so
+            // the next appearance animates from full opacity again (Gemini review).
+            .onDisappear { dim = false }
     }
 }
 

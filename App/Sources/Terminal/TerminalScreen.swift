@@ -129,7 +129,8 @@ public struct TerminalScreen: View {
         ToolbarItem(placement: .principal) {
             HStack(spacing: 8) {
                 Text(row.title).font(.headline).foregroundStyle(Theme.textPrimary).lineLimit(1)
-                BadgeView(badge: runtime.status(for: row.nodeId)?.badge ?? .none)
+                BadgeView(badge: runtime.status(for: row.nodeId)?.badge ?? .none,
+                          unread: runtime.status(for: row.nodeId)?.unread ?? false)
             }
         }
         ToolbarItem(placement: .topBarTrailing) {

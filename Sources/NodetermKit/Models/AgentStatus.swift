@@ -286,15 +286,19 @@ public struct AgentNodeStatus: Sendable, Equatable {
         self.context = context
     }
 
-    /// Badge for a list row (SPEC §6.3). `unread` folds in on the `done` leg only: a finished turn
-    /// shows DONE until `markViewed` / `clearUnread` clears it (§6.3 rule 8). Waiting and blocked
-    /// read as NEEDS YOU whether or not they were seen, so unread adds nothing there.
+    /// Badge for a list row (SPEC §6.3). Every UNREAD session gets a visible badge, because the
+    /// app-icon counter (`unreadBadgeCount`) counts unread nodes regardless of state: a done or a
+    /// decayed-to-`unknown` node that is unread but shows no badge would make the icon count exceed
+    /// the visible markers. `unread` is set only by a working→(done|waiting|blocked) edge and
+    /// survives both resume-to-working and stale-working decay, so an unread `.unknown` still means
+    /// "finished, unseen" and reads as DONE. Waiting/blocked stay NEEDS YOU as a state; whether that
+    /// badge PULSES (new vs already-viewed) is `BadgeView`'s call, from `unread`.
     public var badge: AgentBadge {
         switch state {
         case .working: return .running
         case .waiting, .blocked: return .needsYou
         case .done: return unread ? .done : .idle
-        case .unknown: return .none
+        case .unknown: return unread ? .done : .none
         }
     }
 }

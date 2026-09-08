@@ -110,6 +110,13 @@ private func testMarkViewedAcksOnlyDone() async {
     check(!(onScreen?.unread ?? true), "on-screen done ⇒ not unread")
     checkEq(onScreen?.badge, .idle, "on-screen done ⇒ no badge")
 
+    // An unread node that decayed to `.unknown` still counts in the app-icon unread total, so it
+    // must still carry a badge — it reads as DONE (finished, unseen), not as an empty row.
+    var decayed = AgentNodeStatus(nodeId: "d1", state: .unknown, unread: true)
+    checkEq(decayed.badge, .done, "unknown + unread ⇒ DONE (matches the app-icon count)")
+    decayed.unread = false
+    checkEq(decayed.badge, AgentBadge.none, "unknown + viewed ⇒ no badge")
+
     await store.ingest(event("n2", state: .working), onScreen: false)
     await store.ingest(event("n2", state: .waiting), onScreen: false)
     let ackWaiting = await store.markViewed(nodeId: "n2")
