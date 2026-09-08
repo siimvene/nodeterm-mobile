@@ -95,10 +95,20 @@ private func testMarkViewedAcksOnlyDone() async {
     await store.ingest(event(state: .done), onScreen: false)
     var s = await store.status(for: "n1")
     check(s?.unread ?? false, "working→done offscreen ⇒ unread")
+    checkEq(s?.badge, .done, "done + unread ⇒ DONE badge")
     let ackDone = await store.markViewed(nodeId: "n1")
     check(ackDone, "viewing a done node ⇒ ack-done")
     s = await store.status(for: "n1")
     check(!(s?.unread ?? true), "view clears unread")
+    checkEq(s?.badge, .idle, "viewed done ⇒ no badge")
+
+    // The same edge ON screen never sets unread, so it never shows DONE (§6.3 rule 8).
+    await store.ingest(event("n1s", state: .working), onScreen: true)
+    await store.ingest(event("n1s", state: .done), onScreen: true)
+    let onScreen = await store.status(for: "n1s")
+    checkEq(onScreen?.state, .done, "on-screen done state")
+    check(!(onScreen?.unread ?? true), "on-screen done ⇒ not unread")
+    checkEq(onScreen?.badge, .idle, "on-screen done ⇒ no badge")
 
     await store.ingest(event("n2", state: .working), onScreen: false)
     await store.ingest(event("n2", state: .waiting), onScreen: false)

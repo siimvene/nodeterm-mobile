@@ -114,8 +114,8 @@ public func runDemoModeTests() async {
     }
     expect(sawDone, "claude session observed in .done")
     let final = await statusStore.status(for: DemoScript.claudeNodeId)
-    expect(final?.badge == .idle, "done ⇒ idle badge (no NEEDS-YOU)")
-    expect(final?.unread == true, "working→done off-screen set the unread dot (§6.3 rule 8)")
+    expect(final?.unread == true, "working→done off-screen set unread (§6.3 rule 8)")
+    expect(final?.badge == .done, "done + unread ⇒ DONE badge (no NEEDS-YOU)")
 
     // 4) Context meter merged by sessionId (a DIFFERENT channel folded into the same node).
     let sawContext = await waitUntil {

@@ -314,7 +314,6 @@ struct SessionRowView: View {
         NavigationLink(value: TerminalTarget(serverId: row.serverId, nodeId: row.nodeId)) {
             VStack(spacing: 8) {
                 HStack(spacing: 10) {
-                    if row.unread { Circle().fill(Theme.unread).frame(width: 8, height: 8) }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(row.title).font(.body.weight(.medium)).foregroundStyle(Theme.textPrimary)
                             .lineLimit(1)
@@ -355,29 +354,52 @@ struct SessionRowView: View {
     }
 }
 
-/// The badge per SPEC §6.3 (RUNNING pulsing / NEEDS YOU / idle=none).
+/// The badge per SPEC §6.3 (RUNNING pulsing / NEEDS YOU / DONE slow-pulsing until viewed /
+/// idle=none). DONE replaces the old unread dot on the row: the dot was `Theme.accent`, the same
+/// 8pt purple the project and server headers use as decoration, so a finished agent looked like
+/// every project header. Green + a checkmark reads as "finished" without a legend.
 struct BadgeView: View {
     let badge: AgentBadge
-    @State private var pulse = false
 
     var body: some View {
         switch badge {
         case .running:
             label("RUNNING", color: Theme.running)
-                .opacity(pulse ? 0.55 : 1)
-                .onAppear { withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true } }
+                .modifier(Pulse(period: 0.9))
         case .needsYou:
             label("NEEDS YOU", color: Theme.needsYou)
+        case .done:
+            label("DONE", color: Theme.running, icon: "checkmark")
+                .modifier(Pulse(period: 1.6))
         case .idle, .none:
             EmptyView()
         }
     }
 
-    private func label(_ text: String, color: Color) -> some View {
-        Text(text).font(.caption2.weight(.bold))
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(color.opacity(0.18)).foregroundStyle(color)
-            .clipShape(Capsule())
+    private func label(_ text: String, color: Color, icon: String? = nil) -> some View {
+        HStack(spacing: 4) {
+            if let icon { Image(systemName: icon).font(.caption2.weight(.bold)) }
+            Text(text).font(.caption2.weight(.bold))
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(color.opacity(0.18)).foregroundStyle(color)
+        .clipShape(Capsule())
+    }
+}
+
+/// Opacity pulse that owns its own `@State`, so each `switch` branch of `BadgeView` starts from
+/// full opacity. A single `@State` on the parent stayed `true` across a RUNNING → NEEDS YOU →
+/// RUNNING round trip, and the second RUNNING sat at 55% with no animation.
+private struct Pulse: ViewModifier {
+    let period: Double
+    @State private var dim = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(dim ? 0.55 : 1)
+            .onAppear {
+                withAnimation(.easeInOut(duration: period).repeatForever(autoreverses: true)) { dim = true }
+            }
     }
 }
 

@@ -75,7 +75,7 @@ symbols below by reading the Kit sources.
 - `AgentNodeStatus` — `nodeId, state, unread, sessionId, pendingId, askKind, lastTransitionAt,
   context`; `.badge`; `init(...)`.
 - `ReducedAgentState` — `.working, .waiting, .blocked, .done, .unknown`.
-- `AgentBadge` — `.running, .needsYou, .idle, .none`.
+- `AgentBadge` — `.running, .needsYou, .done, .idle, .none` (`.done` = done AND unread).
 - `AskKind` — `.approval, .question, .unknown(String)`.
 - `PermissionDecision` — `.allow, .deny`.
 - `AnswerPermissionRequest` — `init(nodeId:pendingId:decision:)`; Codable.

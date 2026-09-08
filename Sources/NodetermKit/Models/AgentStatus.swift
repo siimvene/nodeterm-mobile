@@ -240,11 +240,14 @@ public enum ReducedAgentState: String, Codable, Sendable, Equatable, Hashable {
     case working, waiting, blocked, done, unknown
 }
 
-/// The visible badge for a list row (SPEC §6.3 badge mapping).
+/// The visible badge for a list row (SPEC §6.3 badge mapping). A finished turn the user has not
+/// looked at yet is its own badge (`.done`), not a dot: the phone's project and server headers wear
+/// an accent-colored dot as decoration, so an accent unread dot on the row read as more of the same.
 public enum AgentBadge: String, Sendable, Equatable, Hashable {
     case running    // working (pulsing)
     case needsYou   // waiting or blocked
-    case idle       // done (no badge; unread dot if unread)
+    case done       // done AND unread: DONE capsule (slow pulse) until the user views the session
+    case idle       // done, viewed (no badge)
     case none       // unknown (no badge)
 }
 
@@ -283,12 +286,14 @@ public struct AgentNodeStatus: Sendable, Equatable {
         self.context = context
     }
 
-    /// Badge for a list row (SPEC §6.3). The unread dot is a separate concern (`unread`).
+    /// Badge for a list row (SPEC §6.3). `unread` folds in on the `done` leg only: a finished turn
+    /// shows DONE until `markViewed` / `clearUnread` clears it (§6.3 rule 8). Waiting and blocked
+    /// read as NEEDS YOU whether or not they were seen, so unread adds nothing there.
     public var badge: AgentBadge {
         switch state {
         case .working: return .running
         case .waiting, .blocked: return .needsYou
-        case .done: return .idle
+        case .done: return unread ? .done : .idle
         case .unknown: return .none
         }
     }
