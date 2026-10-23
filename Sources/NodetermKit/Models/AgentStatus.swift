@@ -252,6 +252,8 @@ public enum AgentBadge: String, Sendable, Equatable, Hashable {
 /// the latest `context:update`. Produced by an `AgentStatusReducing` implementation.
 public struct AgentNodeStatus: Sendable, Equatable {
     public var nodeId: String
+    /// Provider that last asserted this node's status (for example `codex` or `claude`).
+    public var agentId: String?
     public var state: ReducedAgentState
     /// Set on a working→(done|waiting|blocked) edge while off screen; INDEPENDENT of state (§6.3 #8).
     public var unread: Bool
@@ -265,6 +267,7 @@ public struct AgentNodeStatus: Sendable, Equatable {
 
     public init(
         nodeId: String,
+        agentId: String? = nil,
         state: ReducedAgentState = .unknown,
         unread: Bool = false,
         sessionId: String? = nil,
@@ -274,6 +277,7 @@ public struct AgentNodeStatus: Sendable, Equatable {
         context: ContextWindowUsage? = nil
     ) {
         self.nodeId = nodeId
+        self.agentId = agentId
         self.state = state
         self.unread = unread
         self.sessionId = sessionId

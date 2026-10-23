@@ -10,6 +10,9 @@ import Foundation
 /// `Date()` inline — so the DONE-HOLDOFF (SPEC §6.3 rule 5) is testable.
 public actor AgentStatusStore: AgentStatusReducing {
     private var reductions: [String: NodeReduction] = [:]
+    private var revision = 0
+    private var nodeRevisions: [String: Int] = [:]
+    private var snapshotRevision: Int?
     /// `context:update` is keyed by sessionId, not nodeId, and can arrive before or after the node
     /// is known — hold it here and merge at read time (SPEC §6.1).
     private var contextBySession: [String: ContextWindowUsage] = [:]
@@ -33,7 +36,46 @@ public actor AgentStatusStore: AgentStatusReducing {
     public func ingest(_ event: AgentStatusEvent, onScreen: Bool) async {
         let prior = reductions[event.nodeId] ?? NodeReduction(nodeId: event.nodeId)
         let outcome = AgentStatusReducer.reduce(prior, event, onScreen: onScreen, now: clock())
+        guard outcome.reduction != prior else { return }
         reductions[event.nodeId] = outcome.reduction
+        noteStatusChange(event.nodeId)
+    }
+
+    public func beginSnapshot() async -> Int {
+        revision += 1
+        snapshotRevision = revision
+        return revision
+    }
+
+    public func replaceSnapshot(_ events: [AgentStatusEvent], since version: Int) async {
+        guard snapshotRevision == version else { return }
+        snapshotRevision = nil
+        let newerNodes = Set(nodeRevisions.filter { $0.value > version }.map(\.key))
+        var next = reductions.filter { newerNodes.contains($0.key) }
+        for event in events where !newerNodes.contains(event.nodeId) {
+            // A snapshot is current state, not a new transition: do not apply old DONE holdoff
+            // or manufacture unread completion alerts for work that finished while disconnected.
+            // Unread survives only within the same session: a relaunch while disconnected is a
+            // session boundary, which live processing would have cleared.
+            let old = reductions[event.nodeId]
+            // Both sides without a session id cannot prove a boundary: keep the bit.
+            let sameSession = old != nil && old?.sessionId == event.sessionId
+            let prior = NodeReduction(nodeId: event.nodeId,
+                                      unread: sameSession ? (old?.unread ?? false) : false)
+            var folded = AgentStatusReducer.reduce(prior, event, onScreen: true, now: clock()).reduction
+            // The node entered DONE at some unknown earlier time, not now. Stamping the hydration
+            // time would arm the 3 s DONE-HOLDOFF and drop a genuine live `working` after connect.
+            folded.doneEnteredAt = nil
+            next[event.nodeId] = folded
+        }
+        reductions = next
+        nodeRevisions = nodeRevisions.filter { next[$0.key] != nil }
+    }
+
+    // Only accepted live status can outrank a snapshot, not read flags or local stale decay.
+    private func noteStatusChange(_ nodeId: String) {
+        revision += 1
+        nodeRevisions[nodeId] = revision
     }
 
     /// Fold a `context:update` payload into the meter, keyed by sessionId (SPEC §6.1/§11.6).
@@ -75,7 +117,8 @@ public actor AgentStatusStore: AgentStatusReducing {
     public func sweepStaleWorking(now: Int? = nil) async {
         let t = now ?? clock()
         for (id, r) in reductions {
-            reductions[id] = AgentStatusReducer.sweepStaleWorking(r, now: t, thresholdMs: staleThresholdMs)
+            let swept = AgentStatusReducer.sweepStaleWorking(r, now: t, thresholdMs: staleThresholdMs)
+            reductions[id] = swept
         }
     }
 
@@ -121,6 +164,7 @@ public actor AgentStatusStore: AgentStatusReducing {
         if let sid = r.sessionId { ctx = contextBySession[sid] }
         return AgentNodeStatus(
             nodeId: r.nodeId,
+            agentId: r.agentId,
             state: r.state,
             unread: r.unread,
             sessionId: r.sessionId,

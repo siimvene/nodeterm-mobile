@@ -28,6 +28,24 @@ public struct SessionRow: Identifiable, Sendable, Equatable {
 
     public var badge: AgentBadge { status?.badge ?? .none }
     public var unread: Bool { status?.unread ?? false }
+    /// Live identity also covers agents started inside ordinary shell nodes. Do not overwrite
+    /// `agentId`: that persisted launch choice is still used when attaching or spawning.
+    public var effectiveAgentId: String? {
+        [status?.agentId, agentId].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+    public var agentLabel: String {
+        switch effectiveAgentId {
+        case "claude": return "Claude Code"
+        case "codex": return "Codex"
+        case "gemini": return "Gemini"
+        case "grok": return "Grok"
+        case "opencode": return "OpenCode"
+        case "copilot": return "Copilot"
+        case let id?: return id
+        case nil: return "Shell"
+        }
+    }
     /// Inline Allow/Deny only for a held APPROVAL (SPEC §6.2: `pendingId` present + askKind approval).
     public var showsApproval: Bool { status?.pendingId != nil && status?.askKind == .approval }
     public var pendingId: String? { status?.pendingId }

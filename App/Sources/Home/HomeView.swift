@@ -141,7 +141,7 @@ public struct HomeView: View {
             } else {
                 ForEach(grouped) { group in
                     let collapsed = isCollapsed(group)
-                    let agents = group.rows.filter { $0.agentId != nil }.count
+                    let agents = group.rows.filter { $0.effectiveAgentId != nil }.count
                     let busy = group.rows.filter { $0.status?.state == .working }.count
                     // One card per project: a full-weight, 44pt disclosure header, sessions
                     // nested inside the same card when expanded (desktop sidebar's tree row).
@@ -312,23 +312,32 @@ struct SessionRowView: View {
 
     var body: some View {
         NavigationLink(value: TerminalTarget(serverId: row.serverId, nodeId: row.nodeId)) {
-            VStack(spacing: 8) {
-                HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     if row.unread { Circle().fill(Theme.unread).frame(width: 8, height: 8) }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.title).font(.body.weight(.medium)).foregroundStyle(Theme.textPrimary)
-                            .lineLimit(1)
-                        HStack(spacing: 6) {
-                            Text(row.projectName).lineLimit(1)
-                            if showServer { Text("· \(row.serverName)").lineLimit(1) }
-                            if let pct = row.contextPercent {
-                                Text("· \(Int(pct))%").monospacedDigit()
-                            }
-                        }
-                        .font(.caption).foregroundStyle(Theme.textSecondary)
+                    Text(row.title).font(.body.weight(.medium)).foregroundStyle(Theme.textPrimary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        agentLabel.fixedSize(horizontal: true, vertical: false)
+                        Spacer(minLength: 0)
+                        statusBadge
                     }
-                    Spacer()
-                    BadgeView(badge: row.badge)
+                    VStack(alignment: .leading, spacing: 6) {
+                        agentLabel
+                        statusBadge
+                    }
+                }
+                if showServer || row.contextPercent != nil {
+                    HStack(spacing: 6) {
+                        if showServer { Text(row.serverName).lineLimit(1) }
+                        if let pct = row.contextPercent, pct.isFinite {
+                            Text("\(Int(min(100, max(0, pct))))% context").monospacedDigit()
+                        }
+                    }
+                    .font(.caption).foregroundStyle(Theme.textSecondary)
                 }
                 if row.showsApproval { approvalButtons }
             }
@@ -336,6 +345,20 @@ struct SessionRowView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private var agentLabel: some View {
+        Label(row.agentLabel, systemImage: row.effectiveAgentId == nil ? "terminal" : "cpu")
+            .font(.caption.weight(.semibold)).foregroundStyle(Theme.textSecondary)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("session-agent-\(row.nodeId)")
+    }
+
+    private var statusBadge: some View {
+        BadgeView(badge: row.badge, showInactiveStates: true, unread: row.unread)
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityIdentifier("session-status-\(row.nodeId)")
     }
 
     private var approvalButtons: some View {
@@ -358,6 +381,8 @@ struct SessionRowView: View {
 /// The badge per SPEC §6.3 (RUNNING pulsing / NEEDS YOU / idle=none).
 struct BadgeView: View {
     let badge: AgentBadge
+    var showInactiveStates = false
+    var unread = false
     @State private var pulse = false
 
     var body: some View {
@@ -368,8 +393,10 @@ struct BadgeView: View {
                 .onAppear { withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true } }
         case .needsYou:
             label("NEEDS YOU", color: Theme.needsYou)
-        case .idle, .none:
-            EmptyView()
+        case .idle:
+            if showInactiveStates { label(unread ? "DONE" : "IDLE", color: Theme.textSecondary) }
+        case .none:
+            if showInactiveStates { label("UNKNOWN", color: Theme.textSecondary) }
         }
     }
 
@@ -449,4 +476,3 @@ struct ServerRowView: View {
         }
     }
 }
-

@@ -64,6 +64,9 @@ public enum RpcMethod {
     /// Register a session the phone SPAWNED as a node on a project's canvas (§7.11.4). This is the
     /// one scoped workspace write the phone may make — `workspace:save` stays forbidden.
     public static let workspaceRegisterNode = "workspace:register-node"
+    /// Request the server's current agent states so a newly connected client does not depend on
+    /// having observed the live event that preceded its WebSocket connection.
+    public static let agentStatusSnapshot = "agent:status-snapshot"
     /// Server Edition beside a desktop peer: the desktop's managed Claude accounts a spawn on that
     /// server can run under (§7.11.3). Read-only; `E_NO_HANDLER` on a desktop / peer-less server
     /// means "none", never an error.

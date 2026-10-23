@@ -14,6 +14,7 @@ private func checkEq<T: Equatable>(_ a: T, _ b: T, _ label: String) {
 
 private func ev(
     _ node: String = "n1",
+    agentId: String = "claude",
     kind: AgentEventKind = .state,
     state: AgentState? = nil,
     newTurn: Bool? = nil,
@@ -26,7 +27,7 @@ private func ev(
     sessionId: String? = nil
 ) -> AgentStatusEvent {
     AgentStatusEvent(
-        nodeId: node, agentId: "claude", kind: kind,
+        nodeId: node, agentId: agentId, kind: kind,
         state: state, interrupted: interrupted, idle: idle,
         awaitingInput: awaitingInput, newTurn: newTurn,
         sessionId: sessionId, pendingId: pendingId, askKind: askKind,
@@ -53,6 +54,111 @@ public func runStoresReducerTests() {
     testPendingIdLifecycle()
     testUnknownKindsAndStatesAreNoOps()
     testSweepStaleWorking()
+    testProviderIdentityIsRetained()
+    testProviderIdentityGuards()
+    testCodexStateSessionStartBoundary()
+    testPeerSessionReplacement()
+}
+
+private func testPeerSessionReplacement() {
+    var current = NodeReduction(nodeId: "n1", agentId: "claude", state: .working)
+    // Mirror writes may coalesce the old idle edge and the new start, leaving only the new ask.
+    for event in [
+        ev(agentId: "claude", kind: .session, sessionPhase: .end, sessionId: "old"),
+        ev(agentId: "codex", kind: .session, sessionPhase: .start, sessionId: "new"),
+        ev(agentId: "codex", state: .blocked, pendingId: "new-ticket", askKind: .approval, sessionId: "new")
+    ] {
+        current = AgentStatusReducer.reduce(current, event, onScreen: false, now: 10).reduction
+    }
+    checkEq(current.agentId, "codex", "peer replacement changes provider before attach")
+    checkEq(current.state, .blocked, "coalesced approval remains visible")
+    checkEq(current.pendingId, "new-ticket", "coalesced approval retains its ticket")
+}
+
+private func testProviderIdentityIsRetained() {
+    let outcome = AgentStatusReducer.reduce(
+        NodeReduction(nodeId: "n1"),
+        AgentStatusEvent(nodeId: "n1", agentId: "codex", kind: .state, state: .working),
+        onScreen: false,
+        now: 1
+    )
+    checkEq(outcome.reduction.agentId, "codex", "status retains provider identity")
+}
+
+private func testProviderIdentityGuards() {
+    let canonical = AgentStatusReducer.reduce(
+        NodeReduction(nodeId: "n1"), ev(agentId: "claude", state: .working), onScreen: false, now: 1
+    ).reduction
+    let foreign = AgentStatusReducer.reduce(
+        canonical, ev(agentId: "codex", state: .done), onScreen: false, now: 2
+    )
+    checkEq(foreign.reduction, canonical, "foreign state cannot retag or mutate canonical row")
+
+    let foreignEnd = AgentStatusReducer.reduce(
+        canonical, ev(agentId: "codex", kind: .session, sessionPhase: .end), onScreen: false, now: 3
+    )
+    checkEq(foreignEnd.reduction, canonical, "foreign session end cannot reset canonical row")
+
+    let foreignStart = AgentStatusReducer.reduce(
+        canonical, ev(agentId: "codex", kind: .session, sessionPhase: .start), onScreen: false, now: 3
+    )
+    checkEq(foreignStart.reduction, canonical, "foreign live session start cannot reset canonical row")
+
+    let firstEnd = AgentStatusReducer.reduce(
+        NodeReduction(nodeId: "fresh"), ev(agentId: "codex", kind: .session, sessionPhase: .end),
+        onScreen: false, now: 3
+    )
+    checkEq(firstEnd.reduction.agentId, "codex", "first session end captures provider identity")
+
+    let malformed = AgentStatusReducer.reduce(
+        canonical, ev(agentId: "codex", state: .unknown("bad")), onScreen: false, now: 4
+    )
+    checkEq(malformed.reduction, canonical, "malformed state cannot change provider identity")
+
+    let malformedSession = AgentStatusReducer.reduce(
+        canonical, ev(agentId: "codex", kind: .session, sessionPhase: .unknown("bad")),
+        onScreen: false, now: 5
+    )
+    checkEq(malformedSession.reduction, canonical, "malformed session cannot change provider identity")
+
+    let relaunched = NodeReduction(nodeId: "relaunch", agentId: "claude", state: .done)
+    let switched = AgentStatusReducer.reduce(
+        relaunched, ev(agentId: "codex", kind: .session, sessionPhase: .start), onScreen: false, now: 6
+    )
+    checkEq(switched.reduction.agentId, "codex", "legitimate session start may switch provider")
+}
+
+private func testCodexStateSessionStartBoundary() {
+    let idle = NodeReduction(nodeId: "n1", agentId: "claude", state: .done)
+    let relaunch = AgentStatusReducer.reduce(
+        idle,
+        ev(agentId: "codex", kind: .state, state: .working, sessionPhase: .start, sessionId: "cx-1"),
+        onScreen: false,
+        now: 10
+    )
+    checkEq(relaunch.reduction.agentId, "codex", "marked Codex SessionStart may switch an idle provider")
+    checkEq(relaunch.reduction.sessionId, "cx-1", "marked Codex SessionStart records its session")
+    checkEq(relaunch.reduction.state, .working,
+            "marked Codex SessionStart preserves Codex's initial working state")
+
+    let foreignWorking = AgentStatusReducer.reduce(
+        idle,
+        ev(agentId: "codex", kind: .state, state: .working, sessionId: "cx-child"),
+        onScreen: false,
+        now: 11
+    )
+    checkEq(foreignWorking.reduction, idle,
+            "unmarked foreign working state remains protected as a possible child event")
+
+    let active = NodeReduction(nodeId: "n1", agentId: "claude", state: .working)
+    let leakedStart = AgentStatusReducer.reduce(
+        active,
+        ev(agentId: "codex", kind: .state, state: .working, sessionPhase: .start, sessionId: "cx-child"),
+        onScreen: false,
+        now: 12
+    )
+    checkEq(leakedStart.reduction, active,
+            "marked foreign SessionStart cannot reset an active provider")
 }
 
 // MARK: - Rule 1 base adoption + Rule 8 unread edges (table-driven)

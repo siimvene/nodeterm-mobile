@@ -81,8 +81,9 @@ public final class ServerRuntime: ObservableObject, Identifiable {
         // stop→start pair has run would hand this run's subscriptions to the OLD run's teardown.
         enqueueRpc { await $0.start() }
         let ready = rpcLifecycle
-        tasks.append(Task { await ready?.value; await self.observeConnection() })
-        wireEvents(after: ready)
+        let eventsReady = wireEvents(after: ready)
+        tasks.append(eventsReady)
+        tasks.append(Task { await ready?.value; await eventsReady.value; await self.observeConnection() })
     }
 
     public func stop() {
@@ -127,6 +128,12 @@ public final class ServerRuntime: ObservableObject, Identifiable {
     /// client-local and survive a socket drop; §4.8's "re-subscribe" is about the wire).
     private func onConnected() async {
         await rpc.cast("presence:hello", PresenceHello.args(deviceName: deviceName))
+        // Live status events may have been emitted before this socket connected (notably the
+        // desktop-peer mirror's initial sweep). Hydrate from the server after every connect so
+        // Home can show running/needs-you state without opening a PTY first. Started before the
+        // workspace load so its revision watermark precedes any live event, and run alongside it
+        // so a slow snapshot never delays spawn recovery below.
+        async let statuses: Void = reloadStatuses()
         await reloadWorkspace()
         // SPEC §7.11: a spawn whose launch line or registration was cut off by a socket drop is
         // resumed here, on the runtime, whether or not its terminal view still exists. Runs until
@@ -135,6 +142,18 @@ public final class ServerRuntime: ObservableObject, Identifiable {
         for (nodeId, record) in spawns where record.needsDrive {
             Task { await self.driveSpawn(nodeId: nodeId) }
         }
+        await statuses
+    }
+
+    /// Adopt the server's current status snapshot. This is deliberately separate from PTY
+    /// attachment: status is a read-only connection concern and must be available to Home rows.
+    private func reloadStatuses() async {
+        let revision = await reducer.beginSnapshot()
+        guard let result = try? await rpc.request(RpcMethod.agentStatusSnapshot, []),
+              !Task.isCancelled,
+              let events = try? result.decoded(as: [AgentStatusEvent].self) else { return }
+        await reducer.replaceSnapshot(events, since: revision)
+        await republishStatuses()
     }
 
     /// `workspace:load` → adopt the snapshot. Returns whether a FRESH snapshot was adopted: on
@@ -398,48 +417,62 @@ public final class ServerRuntime: ObservableObject, Identifiable {
             ? .transient : .deferred
     }
 
-    private func wireEvents(after ready: Task<Void, Never>?) {
-        subscribe("agent:status", after: ready) { [weak self] args in
-            guard let self, let first = args.first,
-                  let event = try? first.decoded(as: AgentStatusEvent.self) else { return }
-            let onScreen = (self.onScreenNodeId == event.nodeId)
-            await self.reducer.ingest(event, onScreen: onScreen)
-            await self.republishStatuses()
-        }
-        subscribe("context:update", after: ready) { [weak self] args in
-            guard let self, let first = args.first,
-                  let usage = try? first.decoded(as: ContextWindowUsage.self) else { return }
-            await self.reducer.ingestContext(usage)
-            await self.republishStatuses()
-        }
-        subscribe("agent:unread-clear", after: ready) { [weak self] args in
-            guard let self, let nodeId = args.first?.stringValue else { return }
-            await self.reducer.clearUnread(nodeId: nodeId)   // clear WITHOUT re-acking (§6.3 #8)
-            await self.republishStatuses()
-        }
-        subscribe("accounts:usage", after: ready) { [weak self] args in
-            guard let self, let first = args.first,
-                  let update = try? first.decoded(as: AccountUsageUpdate.self) else { return }
-            self.accountUsage = update.accounts   // desktop-authoritative snapshot; render as-is
-        }
-        subscribe("canvas:mut", after: ready) { [weak self] args in
-            guard let self, args.count >= 2, let projectId = args[0].stringValue,
-                  let mut = try? args[1].decoded(as: CanvasMutation.self) else { return }
-            await self.workspaceStore.apply(mut, projectId: projectId)
-            self.workspace = await self.workspaceStore.snapshot()
-        }
-    }
+    private func wireEvents(after ready: Task<Void, Never>?) -> Task<Void, Never> {
+        // Subscribe every channel before observing `.connected`. Otherwise a fast socket can
+        // trigger the status snapshot while the live streams are still being installed.
+        Task { [weak self, rpc] in
+            await ready?.value
+            let statusStream = await rpc.subscribe("agent:status")
+            let contextStream = await rpc.subscribe("context:update")
+            let unreadStream = await rpc.subscribe("agent:unread-clear")
+            let usageStream = await rpc.subscribe("accounts:usage")
+            let canvasStream = await rpc.subscribe("canvas:mut")
+            guard let self, !Task.isCancelled else { return }
 
-    private func subscribe(_ channel: String, after ready: Task<Void, Never>?,
-                           _ handler: @escaping @MainActor @Sendable ([JSONValue]) async -> Void) {
-        tasks.append(Task { [rpc] in
-            await ready?.value   // never subscribe past a still-queued stop() (see start())
-            let stream = await rpc.subscribe(channel)
-            for await args in stream {
-                if Task.isCancelled { break }
-                await handler(args)   // @MainActor handler runs on main; safe to touch @Published state
-            }
-        })
+            self.tasks.append(Task { [weak self] in
+                for await args in statusStream {
+                    if Task.isCancelled { break }
+                    guard let self, let first = args.first,
+                          let event = try? first.decoded(as: AgentStatusEvent.self) else { continue }
+                    await self.reducer.ingest(event, onScreen: self.onScreenNodeId == event.nodeId)
+                    await self.republishStatuses()
+                }
+            })
+            self.tasks.append(Task { [weak self] in
+                for await args in contextStream {
+                    if Task.isCancelled { break }
+                    guard let self, let first = args.first,
+                          let usage = try? first.decoded(as: ContextWindowUsage.self) else { continue }
+                    await self.reducer.ingestContext(usage)
+                    await self.republishStatuses()
+                }
+            })
+            self.tasks.append(Task { [weak self] in
+                for await args in unreadStream {
+                    if Task.isCancelled { break }
+                    guard let self, let nodeId = args.first?.stringValue else { continue }
+                    await self.reducer.clearUnread(nodeId: nodeId)
+                    await self.republishStatuses()
+                }
+            })
+            self.tasks.append(Task { [weak self] in
+                for await args in usageStream {
+                    if Task.isCancelled { break }
+                    guard let self, let first = args.first,
+                          let update = try? first.decoded(as: AccountUsageUpdate.self) else { continue }
+                    self.accountUsage = update.accounts
+                }
+            })
+            self.tasks.append(Task { [weak self] in
+                for await args in canvasStream {
+                    if Task.isCancelled { break }
+                    guard let self, args.count >= 2, let projectId = args[0].stringValue,
+                          let mut = try? args[1].decoded(as: CanvasMutation.self) else { continue }
+                    await self.workspaceStore.apply(mut, projectId: projectId)
+                    self.workspace = await self.workspaceStore.snapshot()
+                }
+            })
+        }
     }
 
     private func republishStatuses() async {

@@ -114,7 +114,8 @@ symbols below by reading the Kit sources.
   `deleteAll(forServer:)`.
 - `ServerProfileStoring` — `all()`, `profile(id:)`, `add(_:)`, `update(_:)`, `remove(id:)`.
 - `WorkspaceStoring` — `replace(with:)`, `apply(_:projectId:)`, `snapshot()`, `project(id:)`.
-- `AgentStatusReducing` — `ingest(_:onScreen:)`, `ingestContext(_:)`, `clearUnread(nodeId:)`,
+- `AgentStatusReducing` — `ingest(_:onScreen:)`, `beginSnapshot() -> Int`,
+  `replaceSnapshot(_:since:)`, `ingestContext(_:)`, `clearUnread(nodeId:)`,
   `markViewed(nodeId:) -> Bool`, `status(for:)`, `all()`.
 - `TerminalSessionControlling` — `create(_:) -> PtyCreateResult`, `write(sessionId:data:)`,
   `resize(sessionId:cols:rows:viewerId:)`, `park(sessionId:viewerId:)`, `kill(sessionId:viewerId:)`,

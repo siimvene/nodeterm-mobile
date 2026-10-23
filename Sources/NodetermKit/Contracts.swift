@@ -177,6 +177,10 @@ public protocol AgentStatusReducing: Sendable {
     /// Fold one `agent:status` event. `onScreen` decides whether a working→(done|waiting|blocked)
     /// edge sets `unread` (§6.3 rule 8).
     func ingest(_ event: AgentStatusEvent, onScreen: Bool) async
+    /// Capture the live-event revision before requesting an authoritative reconnect snapshot.
+    func beginSnapshot() async -> Int
+    /// Atomically replace old states, keeping nodes changed while the request was in flight.
+    func replaceSnapshot(_ events: [AgentStatusEvent], since revision: Int) async
     /// Fold a `context:update` payload into the node's meter (§6.3 / §11.6).
     func ingestContext(_ usage: ContextWindowUsage) async
     /// Clear unread WITHOUT re-acking — for an `agent:unread-clear` event (§6.3 rule 8).

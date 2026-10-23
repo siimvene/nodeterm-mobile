@@ -140,7 +140,7 @@ public struct TerminalScreen: View {
         ToolbarItem(placement: .topBarTrailing) {
             // Transcript is a Claude-session feature (SPEC §5.4: the server resolves Claude
             // transcripts); other agents get no dead button.
-            if row.agentId == "claude" {
+            if row.effectiveAgentId == "claude" {
                 Button { showTranscript = true } label: { Image(systemName: "text.bubble") }
                     .tint(Theme.textSecondary)
             }

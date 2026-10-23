@@ -11,6 +11,8 @@ import Foundation
 /// `AgentNodeStatus` is projected from this by the store (folding in `context:update`).
 public struct NodeReduction: Sendable, Equatable {
     public var nodeId: String
+    /// Provider identity carried by status events; retained for Home rows even before PTY attach.
+    public var agentId: String?
     /// Reduced badge state; initial `.unknown` — live state is transient/unpersisted server-side,
     /// so a node is unknown until its next hook fires (SPEC §6.3).
     public var state: ReducedAgentState
@@ -34,6 +36,7 @@ public struct NodeReduction: Sendable, Equatable {
 
     public init(
         nodeId: String,
+        agentId: String? = nil,
         state: ReducedAgentState = .unknown,
         unread: Bool = false,
         sessionId: String? = nil,
@@ -45,6 +48,7 @@ public struct NodeReduction: Sendable, Equatable {
         lastEventAt: Int? = nil
     ) {
         self.nodeId = nodeId
+        self.agentId = agentId
         self.state = state
         self.unread = unread
         self.sessionId = sessionId
@@ -92,6 +96,11 @@ public enum AgentStatusReducer {
     /// is supplied by the caller. Unknown event kinds are a no-op (no crash, no state change).
     public static func reduce(_ prior: NodeReduction, _ event: AgentStatusEvent,
                               onScreen: Bool, now: Int) -> ReduceOutcome {
+        // Codex keeps its initial working state but now marks the session boundary explicitly.
+        // Ordinary foreign working events must still be rejected as possible child activity.
+        if event.kind == .state, event.state == .working, event.sessionPhase == .start {
+            return reduceSession(prior, event, now: now)
+        }
         switch event.kind {
         case .session:
             return reduceSession(prior, event, now: now)
@@ -108,13 +117,34 @@ public enum AgentStatusReducer {
 
     private static func reduceSession(_ prior: NodeReduction, _ event: AgentStatusEvent,
                                       now: Int) -> ReduceOutcome {
-        var s = prior
-        if let sid = event.sessionId, !sid.isEmpty { s.sessionId = sid }
-
+        let foreign = !event.agentId.isEmpty && prior.agentId != nil && event.agentId != prior.agentId
         switch event.sessionPhase {
-        case .start?, .end?:
+        case .start?:
+            // A live row cannot be reset by a leaked child session-start. A different provider
+            // may claim a row only after it is no longer working (a genuine relaunch).
+            guard !foreign || prior.state != .working else { return ReduceOutcome(reduction: prior) }
+            var s = prior
+            if !event.agentId.isEmpty { s.agentId = event.agentId }
+            if let sid = event.sessionId, !sid.isEmpty { s.sessionId = sid }
             // SPEC §6.3 rule 6: start → reset to idle/unknown; end → reset AND clear recurring/
             // fan-out UI. Both drop any held prompt, the latch, the done clock, and unread.
+            s.state = event.kind == .state && event.state == .working ? .working : .unknown
+            s.unread = false
+            s.pendingId = nil
+            s.askKind = nil
+            s.doneEnteredAt = nil
+            s.awaitingInputLatch = false
+            s.lastTransitionAt = now
+            s.lastEventAt = now
+            return ReduceOutcome(reduction: s, clearedFanOut: true)
+        case .end?:
+            // A child/session from another provider must not reset this node's canonical row.
+            guard !foreign else {
+                return ReduceOutcome(reduction: prior)
+            }
+            var s = prior
+            if !event.agentId.isEmpty { s.agentId = event.agentId }
+            if let sid = event.sessionId, !sid.isEmpty { s.sessionId = sid }
             s.state = .unknown
             s.unread = false
             s.pendingId = nil
@@ -126,7 +156,7 @@ public enum AgentStatusReducer {
             return ReduceOutcome(reduction: s, clearedFanOut: true)
         case .unknown?, nil:
             // A session event without a recognized phase changes nothing (tolerant, SPEC §6.4).
-            return ReduceOutcome(reduction: s)
+            return ReduceOutcome(reduction: prior)
         }
     }
 
@@ -145,6 +175,11 @@ public enum AgentStatusReducer {
             }
         }()
 
+        // A child event must not retag or mutate the canonical provider row.
+        guard event.agentId.isEmpty || prior.agentId == nil || event.agentId == prior.agentId else {
+            return ReduceOutcome(reduction: prior)
+        }
+
         // --- Rule 5: DONE-HOLDOFF -------------------------------------------------------------
         // A `working` WITHOUT `newTurn` arriving <3000 ms after the node entered `done` is IGNORED
         // (state AND clock untouched). `newTurn:true` bypasses it (an in-order new turn).
@@ -155,8 +190,12 @@ public enum AgentStatusReducer {
         }
 
         var s = prior
+        // Identity is adopted by any event that drives a transition, including the state-less
+        // forms (an `awaitingInput` latch, an idle rescue of a working node).
+        let transitions = mapped != nil || event.awaitingInput == true
+            || (event.idle == true && prior.state == .working)
+        if transitions, !event.agentId.isEmpty { s.agentId = event.agentId }
         if let sid = event.sessionId, !sid.isEmpty { s.sessionId = sid }
-        s.lastEventAt = now
         let fanCleared = (event.newTurn == true) // SPEC §6.3 rule 7
 
         // --- Rule 2: idle done-only rescue ----------------------------------------------------
@@ -170,6 +209,8 @@ public enum AgentStatusReducer {
             return ReduceOutcome(reduction: s, clearedFanOut: fanCleared)
         }
 
+        s.lastEventAt = now
+
         // --- Rule 3: awaitingInput latch ------------------------------------------------------
         // `awaitingInput:true` latches WAITING and holds it through the subsequent turn-end done.
         // SPEC §6.3 rule 3.
@@ -178,6 +219,7 @@ public enum AgentStatusReducer {
             return applyTransition(&s, to: .waiting, event: event, priorState: prior.state,
                                    onScreen: onScreen, now: now, fanCleared: fanCleared)
         }
+        guard let mapped else { return ReduceOutcome(reduction: prior) }
         // Latched: a turn-end `done` is absorbed — stay WAITING and consume the latch (rule 3).
         if prior.awaitingInputLatch, mapped == .done {
             s.awaitingInputLatch = false
@@ -185,10 +227,7 @@ public enum AgentStatusReducer {
         }
 
         // --- Rule 1: adopt the state (interrupted handled in applyTransition) ------------------
-        guard let target = mapped else {
-            // Unknown/absent state on a kind:'state' event → no base transition (tolerant).
-            return ReduceOutcome(reduction: s, clearedFanOut: fanCleared)
-        }
+        let target = mapped
         // Any adopted non-waiting transition clears the awaiting latch.
         if target != .waiting { s.awaitingInputLatch = false }
 
