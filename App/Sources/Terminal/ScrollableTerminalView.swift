@@ -1,21 +1,29 @@
 import UIKit
 import SwiftTerm
+import NodetermKit
 
-/// SwiftTerm's iOS `TerminalView` has NO scroll path: its pan handler reports mouse *drags*
-/// (press→motion→release), which tmux interprets as a copy-mode SELECTION — so a swipe never
-/// scrolls history (the Mac view's `scrollWheel` override has no iOS equivalent in 1.15.0).
-///
-/// This subclass adds the missing half: a single-finger, predominantly-VERTICAL pan is turned
-/// into wheel events (button 4/5), mirroring `MacTerminalView.scrollWheel` line-for-line:
-///   - mouse reporting on (tmux always: `mouse on`) → encodeButton(4|5) + sendEvent per line,
-///     which tmux turns into copy-mode history scrolling;
-///   - mouse off (plain-shell fallback) → the emulator's own scrollUp/scrollDown.
-/// Horizontal/diagonal drags are left to SwiftTerm's own gestures (selection, drag reporting),
-/// which are told to wait for this recognizer to fail.
+/// SwiftTerm already has native UIScrollView history scrolling. Leave that path intact when
+/// mouse reporting is off. For tmux mouse mode, its pan reports selection drags rather than wheel
+/// events, so provide wheel scrolling with bounded frame batches and momentum. Selection and
+/// nonvertical gestures still belong to SwiftTerm.
 final class ScrollableTerminalView: TerminalView {
 
-    private var scrollAccumulator: CGFloat = 0
+    /// Group SwiftTerm's synchronous mouse-event callbacks into one ordered pty:write.
+    var batchInput: ((() -> Void) -> Void)?
+    private var motion = TerminalScrollMotion()
+    private var displayLink: CADisplayLink?
+    private var scrollPoint = CGPoint.zero
     private weak var scrollGesture: UIPanGestureRecognizer?
+
+    // CADisplayLink retains its target. A weak proxy avoids retaining a dismissed terminal.
+    @MainActor private final class DisplayTarget: NSObject {
+        weak var owner: ScrollableTerminalView?
+        init(_ owner: ScrollableTerminalView) { self.owner = owner }
+        @objc func tick(_ link: CADisplayLink) {
+            guard let owner else { link.invalidate(); return }
+            owner.scrollFrame(link)
+        }
+    }
 
     required init?(coder: NSCoder) { super.init(coder: coder) }
 
@@ -25,6 +33,9 @@ final class ScrollableTerminalView: TerminalView {
         pan.maximumNumberOfTouches = 1
         scrollGesture = pan
         addGestureRecognizer(pan)
+        for other in gestureRecognizers ?? [] where other is UIPanGestureRecognizer && other !== pan {
+            other.require(toFail: pan)
+        }
     }
 
     /// SwiftTerm attaches its drag pans LAZILY — `panMouseGesture` only appears when the app
@@ -51,6 +62,7 @@ final class ScrollableTerminalView: TerminalView {
         guard g === scrollGesture, let pan = g as? UIPanGestureRecognizer else {
             return super.gestureRecognizerShouldBegin(g)
         }
+        guard allowMouseReporting, getTerminal().mouseMode != .off else { return false }
         if selectionActive { return false }
         let v = pan.velocity(in: self)
         let t = pan.translation(in: self)
@@ -67,18 +79,61 @@ final class ScrollableTerminalView: TerminalView {
     @objc private func scrollPan(_ pan: UIPanGestureRecognizer) {
         switch pan.state {
         case .began:
-            scrollAccumulator = 0
+            motion.begin()
+            collectDrag(pan)
         case .changed:
-            let dy = pan.translation(in: self).y
-            pan.setTranslation(.zero, in: self)
-            scrollAccumulator += dy
-            let lines = Int(scrollAccumulator / lineHeight)
-            guard lines != 0 else { return }
-            scrollAccumulator -= CGFloat(lines) * lineHeight
-            deliver(lines: lines, at: pan.location(in: self))
+            collectDrag(pan)
+        case .ended:
+            collectDrag(pan)
+            motion.end(velocity: Double(pan.velocity(in: self).y))
+            scheduleScroll()
+        case .cancelled, .failed:
+            cancelScrolling()
         default:
             break
         }
+    }
+
+    private func collectDrag(_ pan: UIPanGestureRecognizer) {
+        motion.drag(points: Double(pan.translation(in: self).y))
+        pan.setTranslation(.zero, in: self)
+        scrollPoint = pan.location(in: self)
+        scheduleScroll()
+    }
+
+    private func scheduleScroll() {
+        if displayLink == nil {
+            let target = DisplayTarget(self)
+            let link = CADisplayLink(target: target, selector: #selector(DisplayTarget.tick(_:)))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+        displayLink?.isPaused = false
+    }
+
+    private func scrollFrame(_ link: CADisplayLink) {
+        guard window != nil, !selectionActive, allowMouseReporting,
+              getTerminal().mouseMode != .off else { cancelScrolling(); return }
+        let lines = motion.advance(seconds: link.targetTimestamp - link.timestamp,
+                                   lineHeight: Double(lineHeight))
+        if lines != 0 { deliver(lines: lines, at: scrollPoint) }
+        link.isPaused = !motion.needsFrame(lineHeight: Double(lineHeight))
+    }
+
+    func cancelScrolling() {
+        motion.cancel()
+        displayLink?.invalidate()
+        displayLink = nil
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { cancelScrolling() }
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        cancelScrolling()
+        super.touchesBegan(touches, with: event)
     }
 
     /// Finger moves DOWN (+lines) = reveal history above = wheel UP (button 4) — the natural
@@ -93,9 +148,10 @@ final class ScrollableTerminalView: TerminalView {
                                        shift: false, meta: false, control: false)
             let col = max(0, min(t.cols - 1, Int(point.x / max(bounds.width / CGFloat(max(t.cols, 1)), 1))))
             let row = max(0, min(t.rows - 1, Int(point.y / lineHeight)))
-            for _ in 0..<magnitude {
-                t.sendEvent(buttonFlags: flags, x: col, y: row)
+            let send = {
+                for _ in 0..<magnitude { t.sendEvent(buttonFlags: flags, x: col, y: row) }
             }
+            if let batchInput { batchInput(send) } else { send() }
         } else {
             if up { scrollUp(lines: magnitude) } else { scrollDown(lines: magnitude) }
         }

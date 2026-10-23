@@ -1,0 +1,57 @@
+name: Terminal checks
+
+on:
+  push:
+    paths:
+      - 'App/Sources/**'
+      - 'Sources/**'
+      - 'Tests/**'
+      - 'Package.swift'
+      - 'project.yml'
+      - '.github/workflows/terminal-checks.yml'
+  pull_request:
+    branches: [main, rebrand/termscape]
+    paths:
+      - 'App/Sources/**'
+      - 'Sources/**'
+      - 'Tests/**'
+      - 'Package.swift'
+      - 'project.yml'
+      - '.github/workflows/terminal-checks.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terminal-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26
+        run: |
+          set -euo pipefail
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          test -n "$XC"
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+      - name: Swift core regression tests
+        run: swift test
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Ensure Metal compiler for SwiftTerm
+        run: |
+          if ! xcrun -f metal >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+      - name: Compile iOS app without signing or uploading
+        run: |
+          xcodebuild build -project Termscape.xcodeproj -scheme Termscape \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/checks CODE_SIGNING_ALLOWED=NO

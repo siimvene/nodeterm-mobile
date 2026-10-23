@@ -111,6 +111,10 @@ public struct Project: Codable, Sendable, Equatable {
     public var ssh: ProjectSSH?
     public var nodes: [CanvasNodeState]
     public var defaultPermissionMode: String?
+    /// The project's default managed Claude/Codex account, used to preselect the account picker
+    /// when SPAWNING a new session here (SPEC §7.11.3). Tolerant optional (synthesized Codable
+    /// decodes an absent key as nil): absent ⇒ default to the System account.
+    public var defaultAccountId: String?
     /// Kanban board (v1). Kept opaque for tolerant decoding; not interpreted in v0.
     public var kanban: JSONValue?
     public var closed: Bool?
@@ -124,6 +128,7 @@ public struct Project: Codable, Sendable, Equatable {
         cwd: String? = nil,
         ssh: ProjectSSH? = nil,
         defaultPermissionMode: String? = nil,
+        defaultAccountId: String? = nil,
         kanban: JSONValue? = nil,
         closed: Bool? = nil,
         unavailable: Bool? = nil
@@ -135,6 +140,7 @@ public struct Project: Codable, Sendable, Equatable {
         self.cwd = cwd
         self.ssh = ssh
         self.defaultPermissionMode = defaultPermissionMode
+        self.defaultAccountId = defaultAccountId
         self.kanban = kanban
         self.closed = closed
         self.unavailable = unavailable

@@ -1,41 +1,15 @@
 import SwiftUI
 import NodetermKit
 
-/// Settings → Usage: account rate-limit stats forwarded from the desktop over `usage:update`.
-/// Read-only; the phone renders the desktop usage service's own snapshots (it cannot query the
-/// provider APIs itself — the credentials live on the host). One expandable card per connected
-/// server, each listing its accounts and their limit windows.
-struct UsageView: View {
-    @EnvironmentObject private var env: AppEnvironment
+/// Account rate-limit usage rendering, shared by the Home dashboard's Usage section (SPEC §9.1 /
+/// §5.6). The numbers are the host usage service's own snapshots, forwarded over `usage:update`;
+/// the phone renders them read-only (the provider credentials live on the host). One row per
+/// account, each listing its limit windows.
+///
+/// (Previously a standalone Settings → Usage page; moved onto the dashboard below the servers
+/// block so it is visible without a detour into Settings.)
 
-    var body: some View {
-        Form {
-            let servers = env.runtimes.filter { $0.connectionState == .connected }
-            if servers.allSatisfy({ $0.accountUsage.isEmpty }) {
-                Section {
-                    Text("No usage reported yet. Connect a server whose desktop is publishing account usage.")
-                        .font(.subheadline).foregroundStyle(Theme.textSecondary)
-                }
-            } else {
-                ForEach(servers, id: \.profile.id) { server in
-                    if !server.accountUsage.isEmpty {
-                        Section(server.profile.name) {
-                            ForEach(server.accountUsage) { account in
-                                AccountUsageRow(account: account)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .scrollContentBackground(.hidden)
-        .background(Theme.background.ignoresSafeArea())
-        .navigationTitle("Usage")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-private struct AccountUsageRow: View {
+struct AccountUsageRow: View {
     let account: AccountUsage
 
     var body: some View {
@@ -43,6 +17,9 @@ private struct AccountUsageRow: View {
             HStack(spacing: 8) {
                 Circle().fill(Theme.accent).frame(width: 8, height: 8)
                 Text(account.displayName).font(.body.weight(.semibold)).foregroundStyle(Theme.textPrimary)
+                // Agent chip: which CLI this row's account belongs to. Codex rows arrive from the
+                // server with agentId "codex" in the same AccountUsage shape, so they get "Codex".
+                agentChip
                 Spacer()
                 if account.status != "ok" {
                     Text(account.status).font(.caption).foregroundStyle(Theme.textTertiary)
@@ -59,9 +36,24 @@ private struct AccountUsageRow: View {
         }
         .padding(.vertical, 4)
     }
+
+    private var agentChip: some View {
+        Text(agentLabel).font(.caption2.weight(.bold))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Theme.cardElevated).clipShape(Capsule())
+            .foregroundStyle(Theme.textSecondary)
+    }
+
+    private var agentLabel: String {
+        switch account.agentId {
+        case "claude": return "Claude"
+        case "codex": return "Codex"
+        default: return account.agentId.capitalized
+        }
+    }
 }
 
-private struct LimitBar: View {
+struct LimitBar: View {
     let limit: AccountUsageLimit
 
     private var color: Color {
@@ -81,7 +73,9 @@ private struct LimitBar: View {
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Theme.card).frame(height: 6)
+                    // cardElevated, not card: the row now sits inside a .card() whose
+                    // background IS Theme.card, so a same-colour track would be invisible.
+                    Capsule().fill(Theme.cardElevated).frame(height: 6)
                     Capsule().fill(color)
                         .frame(width: max(0, geo.size.width * limit.leftPercent / 100), height: 6)
                 }

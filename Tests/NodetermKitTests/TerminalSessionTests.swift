@@ -135,6 +135,13 @@ private func seedPaintDecisionTable() {
     let fresh = PtyCreateResult(sessionId: "s", fresh: true)
     check(TerminalSeedPaint.plan(for: fresh) == [.replayScrollback, .coldStartSeparator],
           "seedpaint fresh → replay+separator")
+    // phone SPAWN (§7.11.2): fresh branch minus the replay and the restore separator — nothing was
+    // restored, so the marker would lie; step 5 (mouse) still applies.
+    check(TerminalSeedPaint.plan(for: fresh, spawning: true) == [], "seedpaint fresh+spawning → nothing")
+    let freshMouse = PtyCreateResult(sessionId: "s", fresh: true, coAttachMouse: true)
+    check(TerminalSeedPaint.plan(for: freshMouse, spawning: true)
+          == [.writeCoAttachMouse(seq: NodetermWire.coAttachMouseSeq)],
+          "seedpaint fresh+spawning keeps step 5 (mouse)")
 
     // warm join with screen: paint (CRLF) + cursor, no reset.
     let warm = PtyCreateResult(sessionId: "s", fresh: false,

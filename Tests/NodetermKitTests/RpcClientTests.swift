@@ -133,6 +133,28 @@ public func runRpcClientTests() async {
     await testClientRestartsAfterStop()
     await testAbandonedTransportsAreClosed()
     await testStateStreamSurvivesStopStart()
+    await testWithheldResponseExpiresAsTimeoutNotDisconnected()
+}
+
+// A server that withholds its `res` (the socket stays up) expires the request as `.timeout`, NOT
+// `.disconnected`: `SpawnTransportFault.classify` keys the live-deadline branch on exactly that
+// case, and the old mapping made it unreachable (consort finding). The socket is still connected.
+private func testWithheldResponseExpiresAsTimeoutNotDisconnected() async {
+    let fake = FakeTransport()
+    let client = RpcClient(makeTransport: { fake }, requestTimeoutNs: 50_000_000)  // 50 ms
+    await client.start()
+    expect(await waitUntilConnected(client), "connected")
+
+    let reqTask = Task { try await client.request("workspace:load", []) }
+    expect(await waitUntil { await !fake.sentFrames().isEmpty }, "request sent")
+    do {
+        _ = try await reqTask.value
+        expect(false, "withheld response should expire")
+    } catch let e as RpcError {
+        expect(e == .timeout, "deadline expiry is .timeout, got \(e)")
+    } catch { expect(false, "unexpected error \(error)") }
+    expect(await client.connectionState() == .connected, "socket still up after a deadline expiry")
+    await client.stop()
 }
 
 // The frozen-after-background bug: a connectionStates stream subscribed BEFORE a stop()

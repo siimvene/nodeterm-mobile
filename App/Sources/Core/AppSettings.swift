@@ -12,7 +12,7 @@ public final class AppSettings: ObservableObject {
         public var id: String { rawValue }
         public var label: String {
             switch self {
-            case .dark: return "nodeterm Dark"
+            case .dark: return "Termscape Dark"
             case .dimmed: return "Dimmed"
             case .solarizedDark: return "Solarized Dark"
             case .highContrast: return "High Contrast"

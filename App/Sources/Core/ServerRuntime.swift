@@ -25,7 +25,7 @@ public final class ServerRuntime: ObservableObject, Identifiable {
     @Published public private(set) var workspace: Workspace?
     /// nodeId → reduced status, republished after every reducer fold (SPEC §6.3).
     @Published public private(set) var statuses: [String: AgentNodeStatus] = [:]
-    /// Account rate-limit usage, forwarded from the desktop over `usage:update` (Settings → Usage).
+    /// Account rate-limit usage, forwarded from the desktop over `usage:update` (shown on the Home dashboard).
     @Published public private(set) var accountUsage: [AccountUsage] = []
 
     /// The session currently shown full-screen — its `onScreen` flag governs unread-setting (§6.3 #8).
@@ -81,8 +81,9 @@ public final class ServerRuntime: ObservableObject, Identifiable {
         // stop→start pair has run would hand this run's subscriptions to the OLD run's teardown.
         enqueueRpc { await $0.start() }
         let ready = rpcLifecycle
-        tasks.append(Task { await ready?.value; await self.observeConnection() })
-        wireEvents(after: ready)
+        let eventsReady = wireEvents(after: ready)
+        tasks.append(eventsReady)
+        tasks.append(Task { await ready?.value; await eventsReady.value; await self.observeConnection() })
     }
 
     public func stop() {
@@ -127,62 +128,351 @@ public final class ServerRuntime: ObservableObject, Identifiable {
     /// client-local and survive a socket drop; §4.8's "re-subscribe" is about the wire).
     private func onConnected() async {
         await rpc.cast("presence:hello", PresenceHello.args(deviceName: deviceName))
+        // Live status events may have been emitted before this socket connected (notably the
+        // desktop-peer mirror's initial sweep). Hydrate from the server after every connect so
+        // Home can show running/needs-you state without opening a PTY first. Started before the
+        // workspace load so its revision watermark precedes any live event, and run alongside it
+        // so a slow snapshot never delays spawn recovery below.
+        async let statuses: Void = reloadStatuses()
         await reloadWorkspace()
+        // SPEC §7.11: a spawn whose launch line or registration was cut off by a socket drop is
+        // resumed here, on the runtime, whether or not its terminal view still exists. Runs until
+        // the record is settled; `.unknown` (and an undelivered launch) re-run. Settled records are
+        // retained but never re-driven (`SpawnRecord.needsDrive`).
+        for (nodeId, record) in spawns where record.needsDrive {
+            Task { await self.driveSpawn(nodeId: nodeId) }
+        }
+        await statuses
     }
 
-    public func reloadWorkspace() async {
+    /// Adopt the server's current status snapshot. This is deliberately separate from PTY
+    /// attachment: status is a read-only connection concern and must be available to Home rows.
+    private func reloadStatuses() async {
+        let revision = await reducer.beginSnapshot()
+        guard let result = try? await rpc.request(RpcMethod.agentStatusSnapshot, []),
+              !Task.isCancelled,
+              let events = try? result.decoded(as: [AgentStatusEvent].self) else { return }
+        await reducer.replaceSnapshot(events, since: revision)
+        await republishStatuses()
+    }
+
+    /// `workspace:load` → adopt the snapshot. Returns whether a FRESH snapshot was adopted: on
+    /// `false` the previous snapshot is kept for display but is NOT evidence of anything — the
+    /// §7.11.4 read-back must treat a failed load as UNKNOWN, never as "the node is absent".
+    ///
+    /// Concurrent loads (two spawn drives, a drive plus a Home refresh) are ordered by a generation
+    /// counter: an answer that arrives after a NEWER load already landed is discarded, never adopted
+    /// over the fresher snapshot (consort finding). It still returns `true` — a fresh snapshot IS in
+    /// place, just not this call's — so the read-back that follows reads the freshest one.
+    @discardableResult
+    public func reloadWorkspace() async -> Bool {
+        workspaceLoadGeneration += 1
+        let gen = workspaceLoadGeneration
         do {
             let result = try await rpc.request(RpcMethod.workspaceLoad, [])
             let ws = try result.decoded(as: Workspace.self)
-            await workspaceStore.replace(with: ws)
+            guard gen > workspaceAdoptedGeneration else { return true }   // a newer load already landed
+            workspaceAdoptedGeneration = gen
+            // Adopt in memory BEFORE the store hop: the read-back reads `workspace`, and a suspension
+            // here would let a newer load's adoption be overwritten by this older answer.
             workspace = ws
+            await workspaceStore.replace(with: ws)
+            return true
         } catch {
             // A failed load is not fatal; keep the last snapshot. (Secrets never logged, §10.2.)
+            return false
         }
     }
+    private var workspaceLoadGeneration = 0
+    private var workspaceAdoptedGeneration = 0
 
-    private func wireEvents(after ready: Task<Void, Never>?) {
-        subscribe("agent:status", after: ready) { [weak self] args in
-            guard let self, let first = args.first,
-                  let event = try? first.decoded(as: AgentStatusEvent.self) else { return }
-            let onScreen = (self.onScreenNodeId == event.nodeId)
-            await self.reducer.ingest(event, onScreen: onScreen)
-            await self.republishStatuses()
-        }
-        subscribe("context:update", after: ready) { [weak self] args in
-            guard let self, let first = args.first,
-                  let usage = try? first.decoded(as: ContextWindowUsage.self) else { return }
-            await self.reducer.ingestContext(usage)
-            await self.republishStatuses()
-        }
-        subscribe("agent:unread-clear", after: ready) { [weak self] args in
-            guard let self, let nodeId = args.first?.stringValue else { return }
-            await self.reducer.clearUnread(nodeId: nodeId)   // clear WITHOUT re-acking (§6.3 #8)
-            await self.republishStatuses()
-        }
-        subscribe("accounts:usage", after: ready) { [weak self] args in
-            guard let self, let first = args.first,
-                  let update = try? first.decoded(as: AccountUsageUpdate.self) else { return }
-            self.accountUsage = update.accounts   // desktop-authoritative snapshot; render as-is
-        }
-        subscribe("canvas:mut", after: ready) { [weak self] args in
-            guard let self, args.count >= 2, let projectId = args[0].stringValue,
-                  let mut = try? args[1].decoded(as: CanvasMutation.self) else { return }
-            await self.workspaceStore.apply(mut, projectId: projectId)
-            self.workspace = await self.workspaceStore.snapshot()
-        }
+    // MARK: New-session spawn helpers (SPEC §7.11)
+
+    /// Read `settings:load` for the new-session sheet (SPEC §7.11.3): managed accounts + the global
+    /// permission mode. Tolerant — a failed/absent read returns nil and the sheet offers no accounts.
+    public func loadSettings() async -> Settings? {
+        guard let result = try? await rpc.request(RpcMethod.settingsLoad, []) else { return nil }
+        return try? result.decoded(as: Settings.self)
     }
 
-    private func subscribe(_ channel: String, after ready: Task<Void, Never>?,
-                           _ handler: @escaping @MainActor @Sendable ([JSONValue]) async -> Void) {
-        tasks.append(Task { [rpc] in
-            await ready?.value   // never subscribe past a still-queued stop() (see start())
-            let stream = await rpc.subscribe(channel)
-            for await args in stream {
-                if Task.isCancelled { break }
-                await handler(args)   // @MainActor handler runs on main; safe to touch @Published state
+    /// `claude-accounts:peer-list` (SPEC §7.11.3): the managed Claude accounts a co-located desktop
+    /// peer owns and this server can spawn under. The server already filters them to spawnable rows.
+    /// Tolerant: a desktop or a peer-less server has no handler, and any failure reads as "none".
+    public func loadPeerClaudeAccounts() async -> [ManagedAccount] {
+        guard let result = try? await rpc.request(RpcMethod.claudeAccountsPeerList, []) else { return [] }
+        return (try? result.decoded(as: [ManagedAccount].self)) ?? []
+    }
+
+    /// Probe `claude-cli:caps` for the launch grammar (SPEC §7.11.3). Fail-closed: any failure →
+    /// the all-false default, so `--permission-mode auto` is never emitted on a guess.
+    public func loadClaudeCliCaps() async -> ClaudeCliCaps {
+        guard let result = try? await rpc.request(RpcMethod.claudeCliCaps, []) else {
+            return ClaudeCliCaps()
+        }
+        return (try? result.decoded(as: ClaudeCliCaps.self)) ?? ClaudeCliCaps()
+    }
+
+    /// Register a session the phone SPAWNED as a node on its project (SPEC §7.11.4). Returns the raw
+    /// boolean the server answers — `false` is overloaded (permanent refusal vs. transient I/O), so
+    /// the caller resolves a `false` with a `workspace:load` read-back. THROWS on a transport
+    /// failure (`.disconnected` / `.timeout`) so the caller can tell "the server said no" from
+    /// "the server was never asked" — the two must not both burn the bounded retry budget. The ONE
+    /// scoped workspace write the phone may issue (`workspace:save` stays forbidden).
+    public func registerNode(projectId: String, payload: JSONValue) async throws -> Bool {
+        let res = try await rpc.request(RpcMethod.workspaceRegisterNode,
+                                        [.value(.string(projectId)), .value(payload)])
+        return res.boolValue == true
+    }
+
+    // MARK: Spawn drive: launch line + registration, owned by the RUNTIME (SPEC §7.11.3 / §7.11.4)
+
+    /// Spawns keyed by node id (= persistKey). The state machine itself is `NodetermKit.SpawnRecord`
+    /// (pure, unit-tested); this dictionary is its only home. Records are RETAINED once settled: a
+    /// rejoin of a long-registered node must find its record and do nothing, not mint a pending one
+    /// that re-registers the node and can raise the UNKNOWN banner on it.
+    @Published public private(set) var spawns: [String: SpawnRecord] = [:]
+    private var spawnDrivesInFlight: Set<String> = []
+    private var spawnRedriveRequested: Set<String> = []
+
+    /// Record a spawn as soon as a `pty:create` has answered for it — the session exists from that
+    /// moment, whether or not the view that asked for it is still on screen. A no-op when a record
+    /// already exists (two joins racing, a reconnect rejoin, a re-appearance): `SpawnRecord.recording`
+    /// decides. `createFresh:false` on a node with NO record is the lost-first-answer path — the
+    /// launch is still owed, gated through `pty:pane-command` so a running agent is never typed into.
+    public func recordSpawn(nodeId: String, projectId: String, launch: PendingLaunch, createFresh: Bool) {
+        spawns[nodeId] = SpawnRecord.recording(
+            existing: spawns[nodeId], projectId: projectId,
+            payload: NewSessionPlan.registerPayload(id: nodeId, title: launch.title,
+                                                    agentId: launch.agentId, accountId: launch.accountId),
+            command: launch.command, createFresh: createFresh, now: Date())
+    }
+
+    /// The view that watched the pane's first output saw 200 ms of quiet (SPEC §7.11.3): the launch
+    /// may be typed now, instead of at the record's 1.5 s silence cap.
+    public func markSpawnSettled(nodeId: String) {
+        spawns[nodeId]?.markSettled(now: Date())
+    }
+
+    /// The banner the terminal shows for a spawned node (nil = pending / not a spawn of this phone /
+    /// fully settled).
+    public func spawnBanner(for nodeId: String) -> SpawnRecord.Banner? { spawns[nodeId]?.banner }
+
+    /// Whether a spawn record already exists for this node — i.e. a `pty:create` has ALREADY answered
+    /// for it. The §7.11.2 spawn branch keys off its ABSENCE (this fresh answer is the first create),
+    /// so a reconnect whose lost first answer left no record is correctly treated as the spawn, not a
+    /// cold restore.
+    public func hasSpawnRecord(nodeId: String) -> Bool { spawns[nodeId] != nil }
+
+    /// The Retry affordance behind the UNKNOWN and launch-undelivered banners.
+    public func retrySpawn(nodeId: String) {
+        Task { await self.driveSpawn(nodeId: nodeId) }
+    }
+
+    /// Retry a launch concluded `.dropped` (the "already busy" banner): re-arm the gated command and
+    /// re-drive — the drive re-probes the pane once more, then delivers only into a bare shell.
+    public func retryDroppedLaunch(nodeId: String) {
+        spawns[nodeId]?.retryLaunch()
+        Task { await self.driveSpawn(nodeId: nodeId) }
+    }
+
+    /// Dismiss the "already busy" banner (the session keeps running).
+    public func dismissDroppedBanner(nodeId: String) {
+        spawns[nodeId]?.acknowledgeDrop()
+    }
+
+    /// Run the spawn's remaining work, serialized per node: a second caller while one drive is in
+    /// flight requests a re-run instead of racing it. The settle wait lives on the RECORD
+    /// (`SpawnRecord.notBefore`), so whoever drives — the view after its quiet observation, a blind
+    /// off-screen caller, an `onConnected` re-drive — honors the same window.
+    public func driveSpawn(nodeId: String) async {
+        guard spawns[nodeId] != nil else { return }
+        if spawnDrivesInFlight.contains(nodeId) { spawnRedriveRequested.insert(nodeId); return }
+        spawnDrivesInFlight.insert(nodeId)
+        repeat {
+            spawnRedriveRequested.remove(nodeId)
+            await driveSpawnOnce(nodeId: nodeId)
+        } while spawnRedriveRequested.contains(nodeId)
+        spawnDrivesInFlight.remove(nodeId)
+        // A launch that stayed undelivered (`.deferred`) gets ONE delayed redelivery on the runtime's
+        // own initiative — not just the next socket drop. Still gated by the pane check. If that one
+        // fails too, `SpawnRecord.banner` turns `.launchUndelivered` and Retry takes over.
+        //
+        // A launch whose FIRST pane check said "busy" (a provisional `.dropped`) gets ONE re-probe
+        // after a short delay before the drop is concluded — the initial "busy" can be a transient
+        // rc-file child, gone a second later. The two are mutually exclusive per drive (a provisional
+        // drop counts no attempt, so `scheduleRedelivery` is false there), but arm at most one anyway.
+        if spawns[nodeId]?.scheduleRedelivery() == true {
+            Task {
+                try? await Task.sleep(for: .seconds(SpawnRecord.redeliveryDelay))
+                await self.driveSpawn(nodeId: nodeId)
             }
-        })
+        } else if spawns[nodeId]?.scheduleDropReprobe() == true {
+            Task {
+                try? await Task.sleep(for: .seconds(SpawnRecord.reprobeDelay))
+                await self.driveSpawn(nodeId: nodeId)
+            }
+        }
+    }
+
+    private func driveSpawnOnce(nodeId: String) async {
+        // Every step below is gated on a live socket; while disconnected, do NOTHING — `onConnected`
+        // re-drives. Retrying into a dead socket would only burn the bounded register budget.
+        guard await rpc.connectionState() == .connected else { return }
+
+        // 1. The launch line (SPEC §7.11.3), not before the record's settle window has passed.
+        launch: while true {
+            guard let record = spawns[nodeId] else { return }
+            switch record.launchStep(now: Date()) {
+            case .nothing:
+                break launch
+            case .wait:
+                // Poll, do not sleep to the deadline: `markSpawnSettled` may shorten the window.
+                try? await Task.sleep(for: .milliseconds(40))
+            case .deliver(let command, let checkPane):
+                guard await rpc.connectionState() == .connected else { return }
+                let delivery = await deliverLaunch(nodeId: nodeId, command: command, checkPane: checkPane)
+                spawns[nodeId]?.apply(delivery: delivery)
+                if delivery == .transient { return }   // socket gone mid-call — the reconnect re-drives both halves
+                break launch
+            }
+        }
+
+        // 2. Registration (SPEC §7.11.4). Steps 1 and 2 are independent on purpose.
+        guard let record = spawns[nodeId], record.registrationPending else { return }
+        for attempt in 0..<4 {
+            if attempt > 0 {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard await rpc.connectionState() == .connected else { return }
+            }
+            do {
+                if try await registerNode(projectId: record.projectId, payload: record.payload) {
+                    // The server's `true` IS the registration: settle the record on it, whatever the
+                    // reload below does. No canvas:mut / external-change subscription picks the new
+                    // node up (SPEC §7.11.5), so reload so the phone's own Home list shows it — and
+                    // retry that reload a few times when it fails, because a registered node the
+                    // list never shows reads exactly like an unsaved one (consort finding).
+                    spawns[nodeId]?.apply(registration: .registered)
+                    for reloadAttempt in 0..<3 {
+                        if reloadAttempt > 0 { try? await Task.sleep(for: .milliseconds(500)) }
+                        guard await rpc.connectionState() == .connected else { return }
+                        if await reloadWorkspace() { break }
+                    }
+                    return
+                }
+            } catch let err as RpcError where err == .disconnected || err == .timeout {
+                // A gone socket (or a `.timeout` on a dropping one) was never answered: leave pending,
+                // re-drive on reconnect. A `.timeout` on a LIVE socket reached the server — fall
+                // through to the read-back like an E_HANDLER refusal, so the outcome still resolves
+                // (mapping it to a bare `return` armed nothing and stranded the node UNKNOWN forever).
+                let connected = await rpc.connectionState() == .connected
+                if SpawnTransportFault.classify(error: err, stillConnected: connected) == .socketGone {
+                    return
+                }
+            } catch {
+                // E_NO_HANDLER / E_HANDLER: the server answered and refused — counts like a `false`.
+            }
+        }
+        // Read-back. A failed load is UNKNOWN, never evidence (RegistrationOutcome's table).
+        let loaded = await reloadWorkspace()
+        spawns[nodeId]?.apply(registration: RegistrationOutcome.decide(
+            workspace: workspace, loadSucceeded: loaded, projectId: record.projectId, nodeId: nodeId))
+    }
+
+    /// `pty:send-text` the launch line, checking BOTH the throw and the Bool (SPEC §7.6/§7.11.3). A
+    /// gated delivery first asks `pty:pane-command`: only a bare shell may receive it, so a launch is
+    /// never typed twice into an agent that is already running.
+    private func deliverLaunch(nodeId: String, command: String, checkPane: Bool) async -> SpawnRecord.Delivery {
+        if checkPane {
+            let pane: String?
+            do {
+                pane = try await terminal.paneCommand(persistKey: nodeId)
+            } catch let err as RpcError where err == .disconnected || err == .timeout {
+                return await deliveryFault(err)
+            } catch {
+                return .deferred
+            }
+            switch LaunchRedelivery.decide(paneCommand: pane) {
+            case .alreadyRunning: return .dropped
+            case .unknown: return .deferred
+            case .send: break
+            }
+        }
+        do {
+            return try await terminal.sendText(persistKey: nodeId, text: command, enter: true) ? .landed : .deferred
+        } catch let err as RpcError where err == .disconnected || err == .timeout {
+            return await deliveryFault(err)
+        } catch {
+            return .deferred
+        }
+    }
+
+    /// A `.disconnected` / `.timeout` from a spawn RPC → the delivery outcome. A live-socket deadline
+    /// (`.timeout` while still `.connected`) is a REAL gated attempt (`.deferred`): it reached the
+    /// server, so it counts and can arm the one delayed redelivery — mapping it to `.transient` armed
+    /// NOTHING and left the launch permanently owed with no re-drive until the next socket drop. A
+    /// gone socket stays `.transient` (the reconnect re-drives it). `SpawnTransportFault` decides.
+    private func deliveryFault(_ err: RpcError) async -> SpawnRecord.Delivery {
+        let connected = await rpc.connectionState() == .connected
+        return SpawnTransportFault.classify(error: err, stillConnected: connected) == .socketGone
+            ? .transient : .deferred
+    }
+
+    private func wireEvents(after ready: Task<Void, Never>?) -> Task<Void, Never> {
+        // Subscribe every channel before observing `.connected`. Otherwise a fast socket can
+        // trigger the status snapshot while the live streams are still being installed.
+        Task { [weak self, rpc] in
+            await ready?.value
+            let statusStream = await rpc.subscribe("agent:status")
+            let contextStream = await rpc.subscribe("context:update")
+            let unreadStream = await rpc.subscribe("agent:unread-clear")
+            let usageStream = await rpc.subscribe("accounts:usage")
+            let canvasStream = await rpc.subscribe("canvas:mut")
+            guard let self, !Task.isCancelled else { return }
+
+            self.tasks.append(Task { [weak self] in
+                for await args in statusStream {
+                    if Task.isCancelled { break }
+                    guard let self, let first = args.first,
+                          let event = try? first.decoded(as: AgentStatusEvent.self) else { continue }
+                    await self.reducer.ingest(event, onScreen: self.onScreenNodeId == event.nodeId)
+                    await self.republishStatuses()
+                }
+            })
+            self.tasks.append(Task { [weak self] in
+                for await args in contextStream {
+                    if Task.isCancelled { break }
+                    guard let self, let first = args.first,
+                          let usage = try? first.decoded(as: ContextWindowUsage.self) else { continue }
+                    await self.reducer.ingestContext(usage)
+                    await self.republishStatuses()
+                }
+            })
+            self.tasks.append(Task { [weak self] in
+                for await args in unreadStream {
+                    if Task.isCancelled { break }
+                    guard let self, let nodeId = args.first?.stringValue else { continue }
+                    await self.reducer.clearUnread(nodeId: nodeId)
+                    await self.republishStatuses()
+                }
+            })
+            self.tasks.append(Task { [weak self] in
+                for await args in usageStream {
+                    if Task.isCancelled { break }
+                    guard let self, let first = args.first,
+                          let update = try? first.decoded(as: AccountUsageUpdate.self) else { continue }
+                    self.accountUsage = update.accounts
+                }
+            })
+            self.tasks.append(Task { [weak self] in
+                for await args in canvasStream {
+                    if Task.isCancelled { break }
+                    guard let self, args.count >= 2, let projectId = args[0].stringValue,
+                          let mut = try? args[1].decoded(as: CanvasMutation.self) else { continue }
+                    await self.workspaceStore.apply(mut, projectId: projectId)
+                    self.workspace = await self.workspaceStore.snapshot()
+                }
+            })
+        }
     }
 
     private func republishStatuses() async {
